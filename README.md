@@ -38,6 +38,8 @@ await client.connect();
 // Search for documents
 const results = await client.search('articles', 'hello world', {
   limit: 100,
+  offset: 50,  // MySQL-compatible: LIMIT 50,100
+  filters: { status: 'published', lang: 'en' },  // Multiple FILTER clauses
   sortColumn: 'created_at',
   sortDesc: true
 });

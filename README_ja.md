@@ -38,6 +38,8 @@ await client.connect();
 // ドキュメントを検索
 const results = await client.search('articles', 'hello world', {
   limit: 100,
+  offset: 50,  // MySQL互換: LIMIT 50,100
+  filters: { status: 'published', lang: 'ja' },  // 複数のFILTER句
   sortColumn: 'created_at',
   sortDesc: true
 });

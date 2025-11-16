@@ -227,8 +227,9 @@ bool CheckMemoryAvailability(uint64_t required_bytes, double safety_margin_ratio
 
   // Check if available physical memory is sufficient
   if (system_info->available_physical_bytes < required_with_margin) {
-    std::cerr <<("Insufficient memory: required={} ({} with margin), available={}", FormatBytes(required_bytes),
-                 FormatBytes(required_with_margin), FormatBytes(system_info->available_physical_bytes));
+    std::cerr << "Insufficient memory: required=" << FormatBytes(required_bytes)
+              << " (with margin: " << FormatBytes(required_with_margin)
+              << "), available=" << FormatBytes(system_info->available_physical_bytes) << std::endl;
     return false;
   }
 

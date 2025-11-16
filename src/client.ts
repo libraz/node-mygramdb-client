@@ -207,15 +207,11 @@ export class MygramClient {
       });
     }
 
-    // Add filters
+    // Add filters (each FILTER is a separate clause)
     const filterEntries = Object.entries(safeFilters);
-    if (filterEntries.length > 0) {
-      parts.push('FILTER');
-      filterEntries.forEach(([key, value], index) => {
-        if (index > 0) parts.push('AND');
-        parts.push(`${key}=${value}`);
-      });
-    }
+    filterEntries.forEach(([key, value]) => {
+      parts.push('FILTER', key, '=', value);
+    });
 
     // Add sort
     if (safeSortColumn) {
@@ -279,15 +275,11 @@ export class MygramClient {
       });
     }
 
-    // Add filters
+    // Add filters (each FILTER is a separate clause)
     const filterEntries = Object.entries(safeFilters);
-    if (filterEntries.length > 0) {
-      parts.push('FILTER');
-      filterEntries.forEach(([key, value], index) => {
-        if (index > 0) parts.push('AND');
-        parts.push(`${key}=${value}`);
-      });
-    }
+    filterEntries.forEach(([key, value]) => {
+      parts.push('FILTER', key, '=', value);
+    });
 
     const response = await this.sendCommand(parts.join(' '));
     return MygramClient.parseCountResponse(response);
@@ -708,9 +700,6 @@ export class MygramClient {
           break;
         case 'optimization':
           debug.optimization = value;
-          break;
-        case 'order_by':
-          debug.orderBy = value;
           break;
         case 'limit':
           debug.limit = parseInt(value.replace('(default)', '').trim(), 10);

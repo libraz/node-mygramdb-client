@@ -62,8 +62,6 @@ export interface DebugInfo {
   final: number;
   /** Optimization strategy used */
   optimization: string;
-  /** Sort column and direction */
-  orderBy?: string;
   /** Limit value */
   limit?: number;
   /** Offset value */

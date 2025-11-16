@@ -368,3 +368,89 @@ try {
 - 複雑な式は完全なクエリ解析が必要で、処理が遅くなる可能性がある
 - パーサーは軽量でリアルタイムのユーザー入力に適している
 - バルク操作の場合、解析された式のキャッシュを検討する
+
+## 高度なクエリ機能
+
+### FILTER構文
+
+MygramDBはフィールド値による結果のフィルタリングをサポートしています。各フィルタは独立した`FILTER`句として送信されます:
+
+```typescript
+const results = await client.search('articles', 'golang', {
+  filters: {
+    status: 'published',
+    category: 'programming',
+    lang: 'ja'
+  }
+});
+
+// 生成されるコマンド:
+// SEARCH articles golang FILTER status = published FILTER category = programming FILTER lang = ja
+```
+
+**重要**:
+
+- 各フィルタのキー・バリューペアは独立した`FILTER key = value`句を生成します
+- 複数のフィルタは`AND`で結合されず、独立した句として扱われます
+- クライアントはC++クライアントとの一貫性と可読性のため3トークン形式(`FILTER key = value`)を使用します
+- サーバーはコンパクト形式(`FILTER key=value`)もサポートしていますが、3トークン形式が推奨されます
+
+### MySQL互換LIMIT構文
+
+MygramDBはMySQL形式の`LIMIT offset,count`構文をサポートしています:
+
+```typescript
+// offsetとlimitを別々に指定する標準形式
+const results = await client.search('articles', 'golang', {
+  limit: 50,    // 取得する結果の数
+  offset: 100   // 最初の100件をスキップ
+});
+
+// 生成されるコマンド: LIMIT 100,50 (MySQL互換形式)
+```
+
+**形式**:
+
+- `LIMIT count` - offsetが0または未指定の場合
+- `LIMIT offset,count` - offsetとlimitの両方が指定されている場合
+- 未指定の場合のデフォルトlimitは1000
+
+### SORT構文
+
+ソートには`SORT`コマンドを使用します(`ORDER BY`ではありません):
+
+```typescript
+const results = await client.search('articles', 'golang', {
+  sortColumn: 'created_at',
+  sortDesc: false  // 昇順
+});
+
+// 生成されるコマンド: SORT created_at ASC
+```
+
+**オプション**:
+
+- `sortColumn` - ソートするカラム名(空の場合は主キー)
+- `sortDesc` - `true`でDESC(デフォルト)、`false`でASC
+
+### 高度なクエリの組み合わせ
+
+```typescript
+const results = await client.search('articles', 'hello world', {
+  andTerms: ['programming'],
+  notTerms: ['deprecated'],
+  filters: {
+    status: 'published',
+    lang: 'ja'
+  },
+  sortColumn: 'score',
+  sortDesc: true,
+  limit: 20,
+  offset: 40
+});
+
+// 生成されるコマンド:
+// SEARCH articles hello world AND programming NOT deprecated
+// FILTER status = published FILTER lang = ja
+// SORT score DESC LIMIT 40,20
+```

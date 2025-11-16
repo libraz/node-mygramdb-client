@@ -46,15 +46,15 @@ function getNativePaths(): string[] {
     // Windows-specific paths
     ...(isWindows
       ? [
-        path.join(basePath, 'build', 'default', moduleName),
-        path.join(basePath, 'out', 'Release', moduleName),
-        path.join(basePath, 'out', 'Debug', moduleName),
-        path.join(basePath, 'Release', moduleName),
-        path.join(basePath, 'Debug', moduleName),
-        path.join(basePath, 'addon-build', 'release', 'install-root', moduleName),
-        path.join(basePath, 'addon-build', 'debug', 'install-root', moduleName),
-        path.join(basePath, 'addon-build', 'default', 'install-root', moduleName)
-      ]
+          path.join(basePath, 'build', 'default', moduleName),
+          path.join(basePath, 'out', 'Release', moduleName),
+          path.join(basePath, 'out', 'Debug', moduleName),
+          path.join(basePath, 'Release', moduleName),
+          path.join(basePath, 'Debug', moduleName),
+          path.join(basePath, 'addon-build', 'release', 'install-root', moduleName),
+          path.join(basePath, 'addon-build', 'debug', 'install-root', moduleName),
+          path.join(basePath, 'addon-build', 'default', 'install-root', moduleName)
+        ]
       : []),
 
     // Relative to current file
@@ -74,8 +74,8 @@ export function loadNativeModule(): unknown {
   if (isCI && isWindows) {
     console.log('[mygram-client] Running in Windows CI environment');
     console.log('[mygram-client] Node ABI:', nodeABI);
-    console.log('[mygram-client] Platform:', platform);
-    console.log('[mygram-client] Arch:', arch);
+    console.log('[mygram-client] Platform:', runtimePlatform);
+    console.log('[mygram-client] Arch:', runtimeArch);
     console.log('[mygram-client] Searching for native module in the following paths:');
     paths.forEach((p, i) => {
       const exists = fs.existsSync(p);

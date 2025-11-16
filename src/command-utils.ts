@@ -2,15 +2,41 @@ import { InputValidationError } from './errors';
 
 export const DEFAULT_MAX_QUERY_LENGTH = 128;
 
-const UNSAFE_CHARACTERS: Array<{ char: string; description: string }> = [
-  { char: '\r', description: 'carriage return (\\r)' },
-  { char: '\n', description: 'line feed (\\n)' },
-  { char: '\u0000', description: 'null byte (\\0)' }
-];
+/**
+ * Check if a character is a control character (0x00-0x1F, 0x7F)
+ * This matches the C++ std::iscntrl behavior
+ *
+ * @param {string} char - Single character to check
+ * @returns {boolean} True if character is a control character
+ */
+function isControlCharacter(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (code >= 0x00 && code <= 0x1f) || code === 0x7f;
+}
+
+/**
+ * Get a description of a control character for error messages
+ *
+ * @param {string} char - Control character
+ * @returns {string} Human-readable description
+ */
+function getControlCharDescription(char: string): string {
+  const code = char.charCodeAt(0);
+  const specialChars: Record<number, string> = {
+    0x00: 'null byte (\\0)',
+    0x09: 'tab (\\t)',
+    0x0a: 'line feed (\\n)',
+    0x0d: 'carriage return (\\r)',
+    0x7f: 'delete (DEL)'
+  };
+  return specialChars[code] || `control character 0x${code.toString(16).toUpperCase().padStart(2, '0')}`;
+}
 
 /**
  * Ensure a command token does not contain characters that would break
  * the Mygram text protocol (like CR/LF that terminate commands).
+ * This validates against all control characters (0x00-0x1F, 0x7F)
+ * to match the C++ client implementation.
  *
  * @param {string} value - Token value to validate
  * @param {string} fieldName - Field name for clearer error messages
@@ -18,9 +44,11 @@ const UNSAFE_CHARACTERS: Array<{ char: string; description: string }> = [
  * @throws {InputValidationError} When the value contains unsafe characters
  */
 export function ensureSafeCommandValue(value: string, fieldName: string): string {
-  for (const { char, description } of UNSAFE_CHARACTERS) {
-    if (value.includes(char)) {
-      throw new InputValidationError(`Invalid character ${description} found in ${fieldName}`);
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (isControlCharacter(char)) {
+      const description = getControlCharDescription(char);
+      throw new InputValidationError(`Input for ${fieldName} contains ${description}, which is not allowed`);
     }
   }
   return value;

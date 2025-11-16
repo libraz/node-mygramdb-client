@@ -368,3 +368,89 @@ try {
 - Complex expressions require full query parsing and may be slower
 - The parser is lightweight and suitable for real-time user input
 - For bulk operations, consider caching parsed expressions
+
+## Advanced Query Features
+
+### FILTER Syntax
+
+MygramDB supports filtering results by field values. Each filter is sent as a separate `FILTER` clause:
+
+```typescript
+const results = await client.search('articles', 'golang', {
+  filters: {
+    status: 'published',
+    category: 'programming',
+    lang: 'en'
+  }
+});
+
+// Generated command:
+// SEARCH articles golang FILTER status = published FILTER category = programming FILTER lang = en
+```
+
+**Important**:
+
+- Each filter key-value pair generates a separate `FILTER key = value` clause
+- Multiple filters are independent clauses, not combined with `AND`
+- The client uses the three-token format (`FILTER key = value`) for consistency with the C++ client and better readability
+- The server also supports compact format (`FILTER key=value`), but the three-token format is recommended
+
+### MySQL-Compatible LIMIT Syntax
+
+MygramDB supports MySQL-style `LIMIT offset,count` syntax for pagination:
+
+```typescript
+// Standard format with separate offset and limit
+const results = await client.search('articles', 'golang', {
+  limit: 50,    // How many results to return
+  offset: 100   // Skip first 100 results
+});
+
+// Generates: LIMIT 100,50 (MySQL-compatible format)
+```
+
+**Formats**:
+
+- `LIMIT count` - When offset is 0 or not specified
+- `LIMIT offset,count` - When both offset and limit are specified
+- Default limit is 1000 if not specified
+
+### SORT Syntax
+
+Sorting uses the `SORT` command (not `ORDER BY`):
+
+```typescript
+const results = await client.search('articles', 'golang', {
+  sortColumn: 'created_at',
+  sortDesc: false  // ASC order
+});
+
+// Generates: SORT created_at ASC
+```
+
+**Options**:
+
+- `sortColumn` - Column name to sort by (empty for primary key)
+- `sortDesc` - `true` for DESC (default), `false` for ASC
+
+### Combined Advanced Query
+
+```typescript
+const results = await client.search('articles', 'hello world', {
+  andTerms: ['programming'],
+  notTerms: ['deprecated'],
+  filters: {
+    status: 'published',
+    lang: 'en'
+  },
+  sortColumn: 'score',
+  sortDesc: true,
+  limit: 20,
+  offset: 40
+});
+
+// Generated command:
+// SEARCH articles hello world AND programming NOT deprecated
+// FILTER status = published FILTER lang = en
+// SORT score DESC LIMIT 40,20
+```

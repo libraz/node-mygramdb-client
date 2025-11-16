@@ -30,6 +30,4 @@ export type {
   CountOptions,
   DebugInfo
 } from './types';
-export {
-  MygramError, ConnectionError, ProtocolError, TimeoutError
-} from './errors';
+export { MygramError, ConnectionError, ProtocolError, TimeoutError } from './errors';

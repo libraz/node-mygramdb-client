@@ -189,15 +189,11 @@ export class NativeMygramClient {
       });
     }
 
-    // Add filters
+    // Add filters (each FILTER is a separate clause)
     const filterEntries = Object.entries(safeFilters);
-    if (filterEntries.length > 0) {
-      parts.push('FILTER');
-      filterEntries.forEach(([key, value], index) => {
-        if (index > 0) parts.push('AND');
-        parts.push(`${key}=${value}`);
-      });
-    }
+    filterEntries.forEach(([key, value]) => {
+      parts.push('FILTER', key, '=', value);
+    });
 
     // Add sort
     if (safeSortColumn) {
@@ -570,9 +566,6 @@ export class NativeMygramClient {
           break;
         case 'optimization':
           debug.optimization = value;
-          break;
-        case 'order_by':
-          debug.orderBy = value;
           break;
         case 'limit':
           debug.limit = parseInt(value.replace('(default)', '').trim(), 10);
