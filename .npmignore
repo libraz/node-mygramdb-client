@@ -1,5 +1,6 @@
 # Source files
 src/
+tests/
 *.test.ts
 *.spec.ts
 
@@ -7,13 +8,19 @@ src/
 tsconfig.json
 vite.config.ts
 vitest.config.ts
+vitest.e2e.config.ts
 
 # Examples
 examples/
 
 # Configuration
 .eslintrc.cjs
-.prettierrc.json
+.prettierrc
+.ncurc.js
+
+# Yarn
+.yarnrc.yml
+.yarn/
 
 # IDE
 .vscode/
@@ -22,6 +29,9 @@ examples/
 # Testing
 coverage/
 .vitest/
+
+# CI/CD
+.github/
 
 # Misc
 .DS_Store

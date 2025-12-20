@@ -1,46 +1,50 @@
-name: Publish to npm
+name: Publish and Create Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      id-token: write
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22.x
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org/'
+          cache: 'yarn'
 
-      - name: Enable Corepack
-        run: corepack enable
+      - run: corepack enable
+      - run: corepack prepare yarn@4.9.1 --activate
 
-      - name: Install dependencies
-        run: yarn install --immutable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .yarn/cache
+            node_modules
+          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
 
-      - name: Lint
-        run: yarn lint
+      - run: yarn install --immutable
+      - run: yarn lint
+      - run: yarn build --verbose
+      - run: yarn test run
 
-      - name: Type check
-        run: yarn type-check
-
-      - name: Test
-        run: yarn test run
-
-      - name: Build
-        run: yarn build:ts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            Automated release for ${{ github.ref_name }}.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

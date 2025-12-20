@@ -12,15 +12,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "native",
+    "lib",
     "binding.gyp",
-    "build/Release/*.node",
-    "README.md",
-    "LICENSE"
+    "native"
   ],
   "binary": {
     "module_name": "mygram_native",
@@ -49,6 +48,7 @@
     "type-check": "tsc --noEmit",
     "install": "node-pre-gyp install --fallback-to-build || node-gyp rebuild || echo 'Native build optional, using pure JavaScript fallback'",
     "prepare": "yarn build || echo 'Build failed, but package still usable with pure JS'",
+    "prepublishOnly": "yarn clean && yarn lint && yarn test run && yarn build",
     "postinstall": "simple-git-hooks"
   },
   "keywords": [
@@ -63,6 +63,14 @@
   ],
   "author": "libraz <libraz@libraz.net>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/libraz/node-mygramdb-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/libraz/node-mygramdb-client/issues"
+  },
+  "homepage": "https://github.com/libraz/node-mygramdb-client#readme",
   "devDependencies": {
     "@types/bindings": "^1",
     "@types/node": "^25.0.3",
