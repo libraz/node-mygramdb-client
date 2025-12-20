@@ -6,10 +6,7 @@
 #include "string_utils.h"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
-#include <iomanip>
-#include <sstream>
 
 #ifdef USE_ICU
 #include <unicode/brkiter.h>
@@ -64,11 +61,6 @@ constexpr uint32_t kCjkExtDStart = 0x2B740;
 constexpr uint32_t kCjkExtDEnd = 0x2B81F;
 constexpr uint32_t kCjkCompatStart = 0xF900;
 constexpr uint32_t kCjkCompatEnd = 0xFAFF;
-
-// Byte formatting constants
-constexpr double kBytesPerKilobyte = 1024.0;
-constexpr double kLargeUnitThreshold = 100.0;
-constexpr double kMediumUnitThreshold = 10.0;
 
 /**
  * @brief Get number of bytes in UTF-8 character from first byte
@@ -340,36 +332,6 @@ std::vector<std::string> GenerateHybridNgrams(const std::string& text, int ascii
   }
 
   return ngrams;
-}
-
-std::string FormatBytes(size_t bytes) {
-  constexpr std::array<const char*, 5> kUnits = {"B", "KB", "MB", "GB", "TB"};
-
-  if (bytes == 0) {
-    return "0B";
-  }
-
-  size_t unit_index = 0;
-  auto size = static_cast<double>(bytes);
-
-  while (size >= kBytesPerKilobyte && unit_index < kUnits.size() - 1) {
-    size /= kBytesPerKilobyte;
-    unit_index++;
-  }
-
-  // Format with appropriate precision
-  std::ostringstream oss;
-  // NOLINTBEGIN(cppcoreguidelines-pro-bounds-constant-array-index)
-  if (size >= kLargeUnitThreshold) {
-    oss << std::fixed << std::setprecision(0) << size << kUnits[unit_index];
-  } else if (size >= kMediumUnitThreshold) {
-    oss << std::fixed << std::setprecision(1) << size << kUnits[unit_index];
-  } else {
-    oss << std::fixed << std::setprecision(2) << size << kUnits[unit_index];
-  }
-  // NOLINTEND(cppcoreguidelines-pro-bounds-constant-array-index)
-
-  return oss.str();
 }
 
 }  // namespace mygramdb::utils
