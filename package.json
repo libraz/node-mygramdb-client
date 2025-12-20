@@ -65,10 +65,10 @@
   "license": "MIT",
   "devDependencies": {
     "@types/bindings": "^1",
-    "@types/node": "^24.10.1",
+    "@types/node": "^25.0.3",
     "@typescript-eslint/eslint-plugin": "7.18.0",
     "@typescript-eslint/parser": "7.18.0",
-    "@vitest/ui": "^4.0.9",
+    "@vitest/ui": "^4.0.16",
     "eslint": "^8",
     "eslint-config-airbnb-base": "^15.0.0",
     "eslint-config-airbnb-typescript": "^18.0.0",
@@ -77,13 +77,13 @@
     "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-prettier": "^5.5.4",
     "node-gyp": "^12.1.0",
-    "prettier": "^3.6.2",
-    "rimraf": "^6.1.0",
+    "prettier": "^3.7.4",
+    "rimraf": "^6.1.2",
     "simple-git-hooks": "^2.13.1",
     "typescript": "5.5.4",
-    "vite": "^7.2.2",
+    "vite": "^7.3.0",
     "vite-plugin-dts": "^4.5.4",
-    "vitest": "^4.0.9"
+    "vitest": "^4.0.16"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -93,7 +93,7 @@
     "yarn": "4.9.1"
   },
   "dependencies": {
-    "@mapbox/node-pre-gyp": "^2.0.0",
+    "@mapbox/node-pre-gyp": "^2.0.3",
     "bindings": "^1.5.0"
   },
   "simple-git-hooks": {
