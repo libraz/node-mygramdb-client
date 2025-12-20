@@ -9,7 +9,9 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 #include "../include/mygramclient_c.h"
+#include "../include/search_expression.h"
 
 #define NAPI_CALL(env, call)                                      \
   do {                                                            \
@@ -323,6 +325,206 @@ static napi_value GetLastError(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Send raw command to server
+ *
+ * @param {External} client - Client handle
+ * @param {string} command - Command string (without \r\n terminator)
+ * @returns {string} Response from server
+ */
+static napi_value SendCommand(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  NAPI_CALL(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+
+  if (argc < 2) {
+    ThrowError(env, "Expected 2 arguments: client, command");
+    return nullptr;
+  }
+
+  // Extract client handle
+  MygramClient_C* client;
+  NAPI_CALL(env, napi_get_value_external(env, args[0], reinterpret_cast<void**>(&client)));
+
+  // Extract command string
+  char command[8192];
+  size_t command_len;
+  NAPI_CALL(env, napi_get_value_string_utf8(env, args[1], command, sizeof(command), &command_len));
+
+  // Send command
+  char* response = nullptr;
+  int rc = mygramclient_send_command(client, command, &response);
+
+  if (rc != 0) {
+    const char* error = mygramclient_get_last_error(client);
+    ThrowError(env, error ? error : "Command failed");
+    if (response) {
+      mygramclient_free_string(response);
+    }
+    return nullptr;
+  }
+
+  // Create result string
+  napi_value result;
+  NAPI_CALL(env, napi_create_string_utf8(env, response ? response : "", NAPI_AUTO_LENGTH, &result));
+
+  // Free response
+  if (response) {
+    mygramclient_free_string(response);
+  }
+
+  return result;
+}
+
+/**
+ * Parse web-style search expression into structured terms
+ *
+ * @param {string} expression - Web-style search expression (e.g., "hello world", "+required -excluded")
+ * @returns {Object} Parsed expression with mainTerm, andTerms, notTerms
+ */
+static napi_value SimplifySearchExpressionWrapper(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  NAPI_CALL(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+
+  if (argc < 1) {
+    ThrowError(env, "Expected expression string");
+    return nullptr;
+  }
+
+  // Extract expression string
+  char expression[4096];
+  size_t expression_len;
+  NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], expression, sizeof(expression), &expression_len));
+
+  // Parse expression using C++ implementation
+  std::string main_term;
+  std::vector<std::string> and_terms;
+  std::vector<std::string> not_terms;
+
+  bool success = mygramdb::client::SimplifySearchExpression(expression, main_term, and_terms, not_terms);
+
+  if (!success) {
+    ThrowError(env, "Failed to parse search expression");
+    return nullptr;
+  }
+
+  // Create result object
+  napi_value result;
+  NAPI_CALL(env, napi_create_object(env, &result));
+
+  // Add mainTerm
+  napi_value main_term_val;
+  NAPI_CALL(env, napi_create_string_utf8(env, main_term.c_str(), NAPI_AUTO_LENGTH, &main_term_val));
+  NAPI_CALL(env, napi_set_named_property(env, result, "mainTerm", main_term_val));
+
+  // Add andTerms array
+  napi_value and_terms_array;
+  NAPI_CALL(env, napi_create_array_with_length(env, and_terms.size(), &and_terms_array));
+  for (size_t i = 0; i < and_terms.size(); i++) {
+    napi_value term_val;
+    NAPI_CALL(env, napi_create_string_utf8(env, and_terms[i].c_str(), NAPI_AUTO_LENGTH, &term_val));
+    NAPI_CALL(env, napi_set_element(env, and_terms_array, static_cast<uint32_t>(i), term_val));
+  }
+  NAPI_CALL(env, napi_set_named_property(env, result, "andTerms", and_terms_array));
+
+  // Add notTerms array
+  napi_value not_terms_array;
+  NAPI_CALL(env, napi_create_array_with_length(env, not_terms.size(), &not_terms_array));
+  for (size_t i = 0; i < not_terms.size(); i++) {
+    napi_value term_val;
+    NAPI_CALL(env, napi_create_string_utf8(env, not_terms[i].c_str(), NAPI_AUTO_LENGTH, &term_val));
+    NAPI_CALL(env, napi_set_element(env, not_terms_array, static_cast<uint32_t>(i), term_val));
+  }
+  NAPI_CALL(env, napi_set_named_property(env, result, "notTerms", not_terms_array));
+
+  return result;
+}
+
+/**
+ * Parse web-style search expression
+ *
+ * @param {string} expression - Search expression (e.g., "+golang -old tutorial")
+ * @returns {Object} Parsed expression with mainTerm, andTerms, notTerms, optionalTerms
+ */
+static napi_value ParseSearchExpressionWrapper(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  NAPI_CALL(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+
+  if (argc < 1) {
+    ThrowError(env, "Expected search expression string");
+    return nullptr;
+  }
+
+  // Get expression string
+  size_t expr_len;
+  NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], nullptr, 0, &expr_len));
+
+  char* expression = static_cast<char*>(malloc(expr_len + 1));
+  if (expression == nullptr) {
+    ThrowError(env, "Memory allocation failed");
+    return nullptr;
+  }
+
+  NAPI_CALL(env, napi_get_value_string_utf8(env, args[0], expression, expr_len + 1, &expr_len));
+
+  // Parse expression
+  MygramParsedExpression_C* parsed = nullptr;
+  int rc = mygramclient_parse_search_expression(expression, &parsed);
+  free(expression);
+
+  if (rc != 0 || parsed == nullptr) {
+    ThrowError(env, "Failed to parse search expression");
+    return nullptr;
+  }
+
+  // Create result object
+  napi_value ret_obj;
+  NAPI_CALL(env, napi_create_object(env, &ret_obj));
+
+  // Add mainTerm
+  napi_value main_term_val;
+  NAPI_CALL(env, napi_create_string_utf8(env, parsed->main_term ? parsed->main_term : "",
+                                          NAPI_AUTO_LENGTH, &main_term_val));
+  NAPI_CALL(env, napi_set_named_property(env, ret_obj, "mainTerm", main_term_val));
+
+  // Add andTerms array
+  napi_value and_terms_array;
+  NAPI_CALL(env, napi_create_array_with_length(env, parsed->and_count, &and_terms_array));
+  for (size_t i = 0; i < parsed->and_count; i++) {
+    napi_value term_val;
+    NAPI_CALL(env, napi_create_string_utf8(env, parsed->and_terms[i], NAPI_AUTO_LENGTH, &term_val));
+    NAPI_CALL(env, napi_set_element(env, and_terms_array, static_cast<uint32_t>(i), term_val));
+  }
+  NAPI_CALL(env, napi_set_named_property(env, ret_obj, "andTerms", and_terms_array));
+
+  // Add notTerms array
+  napi_value not_terms_array;
+  NAPI_CALL(env, napi_create_array_with_length(env, parsed->not_count, &not_terms_array));
+  for (size_t i = 0; i < parsed->not_count; i++) {
+    napi_value term_val;
+    NAPI_CALL(env, napi_create_string_utf8(env, parsed->not_terms[i], NAPI_AUTO_LENGTH, &term_val));
+    NAPI_CALL(env, napi_set_element(env, not_terms_array, static_cast<uint32_t>(i), term_val));
+  }
+  NAPI_CALL(env, napi_set_named_property(env, ret_obj, "notTerms", not_terms_array));
+
+  // Add optionalTerms array
+  napi_value optional_terms_array;
+  NAPI_CALL(env, napi_create_array_with_length(env, parsed->optional_count, &optional_terms_array));
+  for (size_t i = 0; i < parsed->optional_count; i++) {
+    napi_value term_val;
+    NAPI_CALL(env, napi_create_string_utf8(env, parsed->optional_terms[i], NAPI_AUTO_LENGTH, &term_val));
+    NAPI_CALL(env, napi_set_element(env, optional_terms_array, static_cast<uint32_t>(i), term_val));
+  }
+  NAPI_CALL(env, napi_set_named_property(env, ret_obj, "optionalTerms", optional_terms_array));
+
+  // Free parsed expression
+  mygramclient_free_parsed_expression(parsed);
+
+  return ret_obj;
+}
+
+/**
  * Initialize native module
  */
 static napi_value Init(napi_env env, napi_value exports) {
@@ -334,7 +536,10 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "destroyClient", nullptr, DestroyClient, nullptr, nullptr, nullptr, napi_default, nullptr },
     { "isConnected", nullptr, IsConnected, nullptr, nullptr, nullptr, napi_default, nullptr },
     { "search", nullptr, SearchSimple, nullptr, nullptr, nullptr, napi_default, nullptr },
-    { "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr }
+    { "sendCommand", nullptr, SendCommand, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "simplifySearchExpression", nullptr, SimplifySearchExpressionWrapper, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "parseSearchExpression", nullptr, ParseSearchExpressionWrapper, nullptr, nullptr, nullptr, napi_default, nullptr }
   };
 
   NAPI_CALL(env, napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc));

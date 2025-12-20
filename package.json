@@ -1,6 +1,6 @@
 {
-  "name": "mygram-client",
-  "version": "0.1.0",
+  "name": "mygramdb-client",
+  "version": "1.0.0",
   "description": "Node.js client library for MygramDB - High-performance in-memory full-text search engine",
   "type": "module",
   "packageManager": "yarn@4.9.1",
@@ -25,7 +25,7 @@
   "binary": {
     "module_name": "mygram_native",
     "module_path": "./lib/binding/{node_abi}-{platform}-{arch}",
-    "host": "https://github.com/libraz/node-mygram-client/releases/download/",
+    "host": "https://github.com/libraz/node-mygramdb-client/releases/download/",
     "remote_path": "{version}",
     "package_name": "{module_name}-v{version}-{node_abi}-{platform}-{arch}.tar.gz"
   },
@@ -40,6 +40,8 @@
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
+    "test:e2e": "vitest run tests/e2e.test.ts --config vitest.e2e.config.ts",
+    "test:all": "vitest run --config vitest.e2e.config.ts",
     "lint": "eslint . --ext .ts,.tsx",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,json}\"",

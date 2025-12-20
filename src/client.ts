@@ -325,10 +325,14 @@ export class MygramClient {
    */
   async getConfig(): Promise<string> {
     const response = await this.sendCommand('CONFIG');
-    if (!response.startsWith('OK CONFIG')) {
-      throw new ProtocolError(`Invalid CONFIG response: ${response}`);
+    // Handle both "+OK\n..." and "OK CONFIG\n..." formats
+    if (response.startsWith('+OK\n')) {
+      return response.substring('+OK\n'.length);
     }
-    return response.substring('OK CONFIG\n'.length);
+    if (response.startsWith('OK CONFIG\n')) {
+      return response.substring('OK CONFIG\n'.length);
+    }
+    throw new ProtocolError(`Invalid CONFIG response: ${response}`);
   }
 
   /**
@@ -437,6 +441,18 @@ export class MygramClient {
   }
 
   /**
+   * Check if buffer contains a complete multi-line response
+   * Handles both LF (\n) and CRLF (\r\n) line endings, including buggy patterns
+   */
+  private isMultiLineResponseComplete(): boolean {
+    return (
+      this.responseBuffer.endsWith('\n\n') ||
+      this.responseBuffer.endsWith('\r\n\r\n') ||
+      this.responseBuffer.endsWith('\n\r\n') // Server bug workaround
+    );
+  }
+
+  /**
    * Handle incoming data from server
    */
   private handleData(data: string): void {
@@ -447,14 +463,23 @@ export class MygramClient {
     const lines = this.responseBuffer.split('\n');
 
     // Check for complete response
-    if (this.responseBuffer.includes('OK INFO\n') || this.responseBuffer.includes('OK CONFIG\n')) {
-      // Multi-line response - wait for empty line
-      if (this.responseBuffer.endsWith('\n\n') || this.responseBuffer.match(/\n# DEBUG\n[\s\S]*?\n\n/)) {
+    if (
+      this.responseBuffer.includes('OK INFO\n') ||
+      this.responseBuffer.includes('OK CONFIG\n') ||
+      this.responseBuffer.startsWith('+OK\n')
+    ) {
+      // Multi-line response
+      if (this.isMultiLineResponseComplete()) {
         this.completeResponse();
       }
-    } else if (this.responseBuffer.includes('# DEBUG\n')) {
+    } else if (this.responseBuffer.startsWith('OK REPLICATION\n')) {
+      // Multi-line REPLICATION response - wait for END marker
+      if (this.responseBuffer.includes('\nEND\n') || this.responseBuffer.endsWith('\nEND')) {
+        this.completeResponse();
+      }
+    } else if (this.responseBuffer.includes('# DEBUG')) {
       // Debug response - wait for empty line after debug section
-      if (this.responseBuffer.endsWith('\n\n')) {
+      if (this.isMultiLineResponseComplete()) {
         this.completeResponse();
       }
     } else if (lines.length > 1 && lines[lines.length - 1] === '') {
@@ -468,7 +493,8 @@ export class MygramClient {
    */
   private completeResponse(): void {
     if (this.pendingResolve) {
-      const response = this.responseBuffer.trim();
+      // Normalize CRLF to LF for consistent parsing
+      const response = this.responseBuffer.replace(/\r\n/g, '\n').trim();
       this.responseBuffer = '';
 
       if (response.startsWith('ERROR ')) {
@@ -626,12 +652,55 @@ export class MygramClient {
 
   /**
    * Parse REPLICATION STATUS response
+   *
+   * Handles both single-line format:
+   *   OK REPLICATION status=running gtid=xxx
+   * And multi-line format:
+   *   OK REPLICATION
+   *   status: running
+   *   current_gtid: xxx
+   *   processed_events: 123
+   *   END
    */
   private static parseReplicationStatusResponse(response: string): ReplicationStatus {
-    if (!response.startsWith('OK REPLICATION ')) {
+    if (!response.startsWith('OK REPLICATION')) {
       throw new ProtocolError(`Invalid REPLICATION STATUS response: ${response}`);
     }
 
+    const lines = response.split('\n');
+
+    // Check if multi-line format (first line is just "OK REPLICATION")
+    if (lines[0].trim() === 'OK REPLICATION') {
+      // Multi-line format
+      let running = false;
+      let gtid = '';
+
+      lines.slice(1).forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === 'END') return;
+
+        const colonIndex = trimmed.indexOf(':');
+        if (colonIndex === -1) return;
+
+        const key = trimmed.substring(0, colonIndex).trim();
+        const value = trimmed.substring(colonIndex + 1).trim();
+
+        switch (key) {
+          case 'status':
+            running = value === 'running';
+            break;
+          case 'current_gtid':
+            gtid = value;
+            break;
+          default:
+            break;
+        }
+      });
+
+      return { running, gtid, statusStr: response };
+    }
+
+    // Single-line format: OK REPLICATION status=running gtid=xxx
     const parts = response.substring(15).split(' ');
     const statusPart = parts.find((p) => p.startsWith('status='));
     const gtidPart = parts.find((p) => p.startsWith('gtid='));

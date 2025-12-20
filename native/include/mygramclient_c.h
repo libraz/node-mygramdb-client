@@ -262,6 +262,20 @@ int mygramclient_debug_on(MygramClient_C* client);
 int mygramclient_debug_off(MygramClient_C* client);
 
 /**
+ * @brief Send a raw command to the server
+ *
+ * This is a generic function that allows sending any command to the server
+ * and receiving the raw response. Useful for custom commands or future
+ * protocol extensions.
+ *
+ * @param client Client handle
+ * @param command Command string (without \\r\\n terminator)
+ * @param response Output response string (caller must free with mygramclient_free_string)
+ * @return 0 on success, -1 on error
+ */
+int mygramclient_send_command(MygramClient_C* client, const char* command, char** response);
+
+/**
  * @brief Get last error message
  *
  * @param client Client handle
@@ -296,6 +310,50 @@ void mygramclient_free_server_info(MygramServerInfo_C* info);
  * @param str String to free
  */
 void mygramclient_free_string(char* str);
+
+/**
+ * @brief Parsed search expression components
+ */
+typedef struct {
+  char* main_term;        // Main search term (first required or optional term)
+  char** and_terms;       // Array of additional required terms (AND)
+  size_t and_count;       // Number of AND terms
+  char** not_terms;       // Array of excluded terms (NOT)
+  size_t not_count;       // Number of NOT terms
+  char** optional_terms;  // Array of optional terms (OR)
+  size_t optional_count;  // Number of optional terms
+} MygramParsedExpression_C;
+
+/**
+ * @brief Parse web-style search expression
+ *
+ * Parses expressions like "+golang -old tutorial" into structured components.
+ *
+ * Supported syntax:
+ * - `+term` - Required term (AND)
+ * - `-term` - Excluded term (NOT)
+ * - `term` - Optional term
+ * - `"phrase"` - Quoted phrase
+ * - `OR` - Logical OR operator
+ * - `()` - Grouping
+ *
+ * Examples:
+ * - `golang tutorial` → main_term="golang", optional_terms=["tutorial"]
+ * - `+golang -old` → main_term="golang", and_terms=[], not_terms=["old"]
+ * - `+golang +tutorial -old` → main_term="golang", and_terms=["tutorial"], not_terms=["old"]
+ *
+ * @param expression Web-style search expression
+ * @param parsed Output parsed expression (caller must free with mygramclient_free_parsed_expression)
+ * @return 0 on success, -1 on error
+ */
+int mygramclient_parse_search_expression(const char* expression, MygramParsedExpression_C** parsed);
+
+/**
+ * @brief Free parsed expression
+ *
+ * @param parsed Parsed expression to free
+ */
+void mygramclient_free_parsed_expression(MygramParsedExpression_C* parsed);
 
 #ifdef __cplusplus
 }

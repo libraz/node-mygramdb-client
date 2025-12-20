@@ -185,7 +185,9 @@ export function parseSearchExpression(expression: string): SearchExpression {
         hasComplexExpr = true;
         i += 1; // Skip the opening paren
       } else if (nextToken.type === TokenType.WORD || nextToken.type === TokenType.QUOTED) {
-        result.requiredTerms.push(nextToken.value);
+        // Add quotes back for quoted terms (phrase search)
+        const term = nextToken.type === TokenType.QUOTED ? `"${nextToken.value}"` : nextToken.value;
+        result.requiredTerms.push(term);
         i += 1; // Skip the term we just processed
       } else {
         throw new Error(`Expected term after '+' at position ${token.position}`);
@@ -196,11 +198,14 @@ export function parseSearchExpression(expression: string): SearchExpression {
       if (!nextToken || (nextToken.type !== TokenType.WORD && nextToken.type !== TokenType.QUOTED)) {
         throw new Error(`Expected term after '-' at position ${token.position}`);
       }
-      result.excludedTerms.push(nextToken.value);
+      // Add quotes back for quoted terms (phrase search)
+      const term = nextToken.type === TokenType.QUOTED ? `"${nextToken.value}"` : nextToken.value;
+      result.excludedTerms.push(term);
       i += 1; // Skip the term we just processed
     } else if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
-      // Optional term (no prefix)
-      result.optionalTerms.push(token.value);
+      // Optional term (no prefix) - add quotes back for quoted terms
+      const term = token.type === TokenType.QUOTED ? `"${token.value}"` : token.value;
+      result.optionalTerms.push(term);
     } else if (token.type === TokenType.OR || token.type === TokenType.LPAREN || token.type === TokenType.RPAREN) {
       hasComplexExpr = true;
     }
@@ -317,5 +322,72 @@ export function simplifySearchExpression(expression: string): {
     mainTerm: allPositiveTerms[0],
     andTerms: allPositiveTerms.slice(1),
     notTerms: expr.excludedTerms
+  };
+}
+
+/**
+ * Native binding interface for search expression parser
+ */
+interface NativeBinding {
+  parseSearchExpression(expression: string): {
+    mainTerm: string;
+    andTerms: string[];
+    notTerms: string[];
+    optionalTerms: string[];
+  };
+}
+
+/**
+ * Type guard to check if native binding is valid
+ */
+function isNativeBinding(binding: unknown): binding is NativeBinding {
+  return (
+    typeof binding === 'object' &&
+    binding !== null &&
+    'parseSearchExpression' in binding &&
+    typeof (binding as NativeBinding).parseSearchExpression === 'function'
+  );
+}
+
+/**
+ * Parse search expression using native binding if available
+ *
+ * This function attempts to use the native C++ parser for better performance.
+ * Falls back to JavaScript implementation if native binding is not available.
+ *
+ * @param {string} expression - Web-style search expression
+ * @returns {{ mainTerm: string, andTerms: string[], notTerms: string[], optionalTerms: string[] }} Parsed expression
+ * @throws {Error} If expression is invalid
+ */
+export function parseSearchExpressionNative(expression: string): {
+  mainTerm: string;
+  andTerms: string[];
+  notTerms: string[];
+  optionalTerms: string[];
+} {
+  try {
+    // Try to load native binding
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+    const binding: unknown = require('../build/Release/mygram_native.node');
+    if (isNativeBinding(binding)) {
+      return binding.parseSearchExpression(expression);
+    }
+  } catch {
+    // Native binding not available, fall through to JS implementation
+  }
+
+  // Fallback to JavaScript implementation
+  const expr = parseSearchExpression(expression);
+  const allPositiveTerms = [...expr.requiredTerms, ...expr.optionalTerms];
+
+  if (allPositiveTerms.length === 0) {
+    throw new Error('Search expression must have at least one positive term');
+  }
+
+  return {
+    mainTerm: allPositiveTerms[0],
+    andTerms: allPositiveTerms.slice(1),
+    notTerms: expr.excludedTerms,
+    optionalTerms: expr.optionalTerms
   };
 }

@@ -9,14 +9,15 @@
 // NOLINTBEGIN(readability-identifier-naming, cppcoreguidelines-owning-memory,
 // cppcoreguidelines-no-malloc, readability-implicit-bool-conversion)
 
-#include "mygramclient_c.h"
+#include "../include/mygramclient_c.h"
 
 #include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "mygramclient.h"
+#include "../include/mygramclient.h"
+#include "../include/search_expression.h"
 
 using namespace mygramdb::client;
 
@@ -94,9 +95,9 @@ int mygramclient_connect(MygramClient_C* client) {
     return -1;
   }
 
-  auto err = client->client->Connect();
-  if (err) {
-    client->last_error = *err;
+  auto result = client->client->Connect();
+  if (!result) {
+    client->last_error = result.error().to_string();
     return -1;
   }
 
@@ -159,12 +160,12 @@ int mygramclient_search_advanced(MygramClient_C* client, const char* table, cons
   auto search_result = client->client->Search(table, query, limit, offset, and_terms_vec, not_terms_vec, filters_vec,
                                               sort_column_str, sort_desc != 0);
 
-  if (auto* err = std::get_if<Error>(&search_result)) {
-    client->last_error = err->message;
+  if (!search_result) {
+    client->last_error = search_result.error().to_string();
     return -1;
   }
 
-  auto resp = std::get<SearchResponse>(search_result);
+  auto& resp = *search_result;
 
   auto* result_c = static_cast<MygramSearchResult_C*>(malloc(sizeof(MygramSearchResult_C)));
   if (result_c == nullptr) {
@@ -226,12 +227,12 @@ int mygramclient_count_advanced(MygramClient_C* client, const char* table, const
 
   auto count_result = client->client->Count(table, query, and_terms_vec, not_terms_vec, filters_vec);
 
-  if (auto* err = std::get_if<Error>(&count_result)) {
-    client->last_error = err->message;
+  if (!count_result) {
+    client->last_error = count_result.error().to_string();
     return -1;
   }
 
-  auto resp = std::get<CountResponse>(count_result);
+  auto& resp = *count_result;
   *count = resp.count;
 
   return 0;
@@ -244,12 +245,12 @@ int mygramclient_get(MygramClient_C* client, const char* table, const char* prim
 
   auto get_result = client->client->Get(table, primary_key);
 
-  if (auto* err = std::get_if<Error>(&get_result)) {
-    client->last_error = err->message;
+  if (!get_result) {
+    client->last_error = get_result.error().to_string();
     return -1;
   }
 
-  auto document = std::get<Document>(get_result);
+  auto& document = *get_result;
 
   auto* doc_c = static_cast<MygramDocument_C*>(malloc(sizeof(MygramDocument_C)));
   if (doc_c == nullptr) {
@@ -293,12 +294,12 @@ int mygramclient_info(MygramClient_C* client, MygramServerInfo_C** info) {
 
   auto info_result = client->client->Info();
 
-  if (auto* err = std::get_if<Error>(&info_result)) {
-    client->last_error = err->message;
+  if (!info_result) {
+    client->last_error = info_result.error().to_string();
     return -1;
   }
 
-  auto server_info = std::get<ServerInfo>(info_result);
+  auto& server_info = *info_result;
 
   auto* info_c = static_cast<MygramServerInfo_C*>(malloc(sizeof(MygramServerInfo_C)));
   if (info_c == nullptr) {
@@ -326,12 +327,12 @@ int mygramclient_get_config(MygramClient_C* client, char** config_str) {
 
   auto config_result = client->client->GetConfig();
 
-  if (auto* err = std::get_if<Error>(&config_result)) {
-    client->last_error = err->message;
+  if (!config_result) {
+    client->last_error = config_result.error().to_string();
     return -1;
   }
 
-  *config_str = strdup_safe(std::get<std::string>(config_result));
+  *config_str = strdup_safe(*config_result);
   return 0;
 }
 
@@ -343,12 +344,12 @@ int mygramclient_save(MygramClient_C* client, const char* filepath, char** saved
   std::string filepath_str = filepath != nullptr ? filepath : "";
   auto save_result = client->client->Save(filepath_str);
 
-  if (auto* err = std::get_if<Error>(&save_result)) {
-    client->last_error = err->message;
+  if (!save_result) {
+    client->last_error = save_result.error().to_string();
     return -1;
   }
 
-  *saved_path = strdup_safe(std::get<std::string>(save_result));
+  *saved_path = strdup_safe(*save_result);
   return 0;
 }
 
@@ -359,12 +360,12 @@ int mygramclient_load(MygramClient_C* client, const char* filepath, char** loade
 
   auto load_result = client->client->Load(filepath);
 
-  if (auto* err = std::get_if<Error>(&load_result)) {
-    client->last_error = err->message;
+  if (!load_result) {
+    client->last_error = load_result.error().to_string();
     return -1;
   }
 
-  *loaded_path = strdup_safe(std::get<std::string>(load_result));
+  *loaded_path = strdup_safe(*load_result);
   return 0;
 }
 
@@ -373,9 +374,9 @@ int mygramclient_replication_stop(MygramClient_C* client) {
     return -1;
   }
 
-  auto err = client->client->StopReplication();
-  if (err) {
-    client->last_error = *err;
+  auto result = client->client->StopReplication();
+  if (!result) {
+    client->last_error = result.error().to_string();
     return -1;
   }
 
@@ -387,9 +388,9 @@ int mygramclient_replication_start(MygramClient_C* client) {
     return -1;
   }
 
-  auto err = client->client->StartReplication();
-  if (err) {
-    client->last_error = *err;
+  auto result = client->client->StartReplication();
+  if (!result) {
+    client->last_error = result.error().to_string();
     return -1;
   }
 
@@ -401,9 +402,9 @@ int mygramclient_debug_on(MygramClient_C* client) {
     return -1;
   }
 
-  auto err = client->client->EnableDebug();
-  if (err) {
-    client->last_error = *err;
+  auto result = client->client->EnableDebug();
+  if (!result) {
+    client->last_error = result.error().to_string();
     return -1;
   }
 
@@ -415,12 +416,27 @@ int mygramclient_debug_off(MygramClient_C* client) {
     return -1;
   }
 
-  auto err = client->client->DisableDebug();
-  if (err) {
-    client->last_error = *err;
+  auto result = client->client->DisableDebug();
+  if (!result) {
+    client->last_error = result.error().to_string();
     return -1;
   }
 
+  return 0;
+}
+
+int mygramclient_send_command(MygramClient_C* client, const char* command, char** response) {
+  if (client == nullptr || client->client == nullptr || command == nullptr || response == nullptr) {
+    return -1;
+  }
+
+  auto result = client->client->SendCommand(command);
+  if (!result) {
+    client->last_error = result.error().to_string();
+    return -1;
+  }
+
+  *response = strdup_safe(*result);
   return 0;
 }
 
@@ -464,6 +480,63 @@ void mygramclient_free_server_info(MygramServerInfo_C* info) {
 
 void mygramclient_free_string(char* str) {
   free(str);
+}
+
+int mygramclient_parse_search_expression(const char* expression, MygramParsedExpression_C** parsed) {
+  if (expression == nullptr || parsed == nullptr) {
+    return -1;
+  }
+
+  // Parse using SimplifySearchExpression
+  std::string main_term;
+  std::vector<std::string> and_terms;
+  std::vector<std::string> not_terms;
+
+  if (!SimplifySearchExpression(expression, main_term, and_terms, not_terms)) {
+    return -1;
+  }
+
+  // Also parse to get optional terms
+  auto expr_result = ParseSearchExpression(expression);
+  if (!expr_result) {
+    return -1;
+  }
+
+  // Allocate result
+  auto* result = static_cast<MygramParsedExpression_C*>(malloc(sizeof(MygramParsedExpression_C)));
+  if (result == nullptr) {
+    return -1;
+  }
+
+  // Copy main term
+  result->main_term = strdup_safe(main_term);
+
+  // Copy AND terms
+  result->and_count = and_terms.size();
+  result->and_terms = string_vector_to_c_array(and_terms);
+
+  // Copy NOT terms
+  result->not_count = not_terms.size();
+  result->not_terms = string_vector_to_c_array(not_terms);
+
+  // Copy optional terms
+  result->optional_count = expr_result->optional_terms.size();
+  result->optional_terms = string_vector_to_c_array(expr_result->optional_terms);
+
+  *parsed = result;
+  return 0;
+}
+
+void mygramclient_free_parsed_expression(MygramParsedExpression_C* parsed) {
+  if (parsed == nullptr) {
+    return;
+  }
+
+  free(parsed->main_term);
+  free_c_string_array(parsed->and_terms, parsed->and_count);
+  free_c_string_array(parsed->not_terms, parsed->not_count);
+  free_c_string_array(parsed->optional_terms, parsed->optional_count);
+  free(parsed);
 }
 
 // NOLINTEND(readability-identifier-naming, cppcoreguidelines-owning-memory,

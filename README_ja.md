@@ -1,15 +1,16 @@
-# mygram-client
+# mygramdb-client
 
-[![npm version](https://img.shields.io/npm/v/mygram-client.svg)](https://www.npmjs.com/package/mygram-client)
+[![npm version](https://img.shields.io/npm/v/mygramdb-client.svg)](https://www.npmjs.com/package/mygramdb-client)
+[![CI](https://github.com/libraz/node-mygramdb-client/actions/workflows/ci.yml/badge.svg)](https://github.com/libraz/node-mygramdb-client/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリ - MySQL FULLTEXT の **25〜200倍高速** な高性能インメモリ全文検索エンジンで、MySQL レプリケーションをサポートしています。
 
 ## 特徴
 
-- **Pure JavaScript/TypeScript** - ネイティブ依存なし、すべてのプラットフォームで動作
+- **デュアル実装** - オプションのC++ネイティブバインディング（JavaScript自動フォールバック）
 - **完全なプロトコルサポート** - すべての MygramDB コマンド（SEARCH、COUNT、GET、INFO など）
-- **検索式パーサー** - Web スタイルの検索構文（+必須、-除外、OR、グループ化）
+- **検索式パーサー** - Web スタイルの検索構文（+必須、-除外、"フレーズ"、OR、グループ化）
 - **型安全性** - 完全な TypeScript 型定義
 - **Promise ベース API** - モダンな async/await インターフェース
 - **コネクションプーリング対応** - コネクションプールとの統合が容易
@@ -18,28 +19,35 @@
 ## インストール
 
 ```bash
-npm install mygram-client
+npm install mygramdb-client
 # または
-yarn add mygram-client
+yarn add mygramdb-client
 ```
 
 ## クイックスタート
 
 ```typescript
-import { MygramClient } from 'mygram-client';
+import { createMygramClient, simplifySearchExpression } from 'mygramdb-client';
 
-const client = new MygramClient({
+// ネイティブC++クライアントが利用可能なら使用、なければ純粋なJavaScript
+const client = createMygramClient({
   host: 'localhost',
   port: 11016
 });
 
 await client.connect();
 
-// ドキュメントを検索
-const results = await client.search('articles', 'hello world', {
+// Web スタイルの検索式をパース（スペース = AND、- = NOT）
+const expr = simplifySearchExpression('hello world -spam');
+// expr = { mainTerm: 'hello', andTerms: ['world'], notTerms: ['spam'] }
+
+// AND/NOT 条件で検索
+const results = await client.search('articles', expr.mainTerm, {
+  andTerms: expr.andTerms,
+  notTerms: expr.notTerms,
   limit: 100,
   offset: 50,  // MySQL互換: LIMIT 50,100
-  filters: { status: 'published', lang: 'ja' },  // 複数のFILTER句
+  filters: { status: 'published', lang: 'ja' },
   sortColumn: 'created_at',
   sortDesc: true
 });
@@ -52,7 +60,7 @@ const count = await client.count('articles', 'technology');
 // ID でドキュメントを取得
 const doc = await client.get('articles', '12345');
 
-await client.disconnect();
+client.disconnect();
 ```
 
 ## ドキュメント
@@ -74,7 +82,7 @@ import type {
   Document,
   ServerInfo,
   SearchOptions
-} from 'mygram-client';
+} from 'mygramdb-client';
 ```
 
 ## 開発
@@ -107,7 +115,7 @@ libraz <libraz@libraz.net>
 ## リンク
 
 - [MygramDB](https://github.com/libraz/mygram-db/) - MygramDB サーバー
-- [npm package](https://www.npmjs.com/package/mygram-client)
+- [npm package](https://www.npmjs.com/package/mygramdb-client)
 
 ## コントリビューション
 

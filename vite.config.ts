@@ -17,7 +17,7 @@ export default defineConfig({
       fileName: (format) => `index.${format === 'es' ? 'js' : 'cjs'}`,
     },
     rollupOptions: {
-      external: ['net', 'events'],
+      external: ['net', 'events', 'path', 'fs', 'bindings'],
       output: {
         exports: 'named',
       },

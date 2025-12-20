@@ -6,6 +6,21 @@ The mygram-client library includes a powerful search expression parser that conv
 
 The parser allows users to write intuitive search queries using familiar syntax like Google search, with support for required terms, excluded terms, OR operators, and grouping.
 
+## Native Implementation
+
+The parser has both JavaScript and C++ implementations. When you import from `client-factory`, the library automatically uses the native C++ implementation if available, falling back to JavaScript otherwise.
+
+```typescript
+import { simplifySearchExpression } from 'mygramdb-client';
+
+// Uses native C++ if available, otherwise JavaScript
+const expr = simplifySearchExpression('hello world');
+
+// Force JavaScript implementation
+import { simplifySearchExpressionJS } from 'mygramdb-client';
+const exprJS = simplifySearchExpressionJS('hello world');
+```
+
 ## Syntax
 
 ### Basic Syntax
@@ -34,6 +49,50 @@ This searches for documents that:
 - Should contain the phrase "best practices"
 
 ## Functions
+
+### parseSearchExpressionNative()
+
+```typescript
+function parseSearchExpressionNative(expression: string): {
+  mainTerm: string;
+  andTerms: string[];
+  notTerms: string[];
+  optionalTerms: string[];
+}
+```
+
+**High-performance native C++ parser** that converts web-style search expressions into structured terms. This function automatically uses the native C++ implementation when available, falling back to the JavaScript parser if native bindings are not built.
+
+**Parameters:**
+- `expression` (string) - Web-style search expression
+
+**Returns:** Object with parsed terms
+
+**Throws:** Error if expression is invalid or has no positive terms
+
+**Performance:** The native implementation provides significantly better performance for parsing complex expressions, especially useful for high-throughput applications.
+
+**Example:**
+```typescript
+import { parseSearchExpressionNative } from 'mygramdb-client';
+
+const result = parseSearchExpressionNative('+golang tutorial -old');
+console.log(result);
+// {
+//   mainTerm: 'golang',
+//   andTerms: ['tutorial'],
+//   notTerms: ['old'],
+//   optionalTerms: []
+// }
+
+// Use with client
+const results = await client.search('articles', result.mainTerm, {
+  andTerms: result.andTerms,
+  notTerms: result.notTerms,
+});
+```
+
+**Note:** When quotes are used in the expression, the native parser preserves them in the term strings (e.g., `"machine learning"` instead of `machine learning`). This is intentional to maintain exact phrase semantics in the query.
 
 ### parseSearchExpression()
 
@@ -299,12 +358,15 @@ const results = await client.search('articles', query);
 const expression = '"hello world" +golang';
 const { mainTerm, andTerms, notTerms } = simplifySearchExpression(expression);
 
-// mainTerm: 'hello world'
+// mainTerm: '"hello world"'  // Quotes preserved for phrase search
 // andTerms: ['golang']
 // notTerms: []
 
 const results = await client.search('articles', mainTerm, { andTerms, notTerms });
 ```
+
+> **Note**: Quotes are preserved in the parsed terms to maintain phrase search semantics.
+> The server treats `"hello world"` as an exact phrase match.
 
 ## Type Definitions
 

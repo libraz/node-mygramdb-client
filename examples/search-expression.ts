@@ -2,7 +2,13 @@
  * Search expression parser example
  */
 
-import { MygramClient, convertSearchExpression, simplifySearchExpression, parseSearchExpression } from '../src';
+import {
+  MygramClient,
+  convertSearchExpression,
+  simplifySearchExpression,
+  parseSearchExpression,
+  parseSearchExpressionNative
+} from '../src';
 
 async function searchExpressionExample(): Promise<void> {
   console.log('=== Search Expression Parser Examples ===\n');
@@ -99,6 +105,40 @@ async function searchExpressionExample(): Promise<void> {
   console.log(`    Optional terms: [${parsed.optionalTerms.join(', ')}]`);
   console.log(`    Excluded terms: [${parsed.excludedTerms.join(', ')}]`);
   console.log(`    Raw expression: "${parsed.rawExpression}"`);
+
+  // Example 11: Native parser (high-performance C++ implementation)
+  console.log('\n11. Native parser (C++ implementation):');
+  try {
+    const nativeExpr = '+golang tutorial -old -deprecated';
+    console.log(`    Input: "${nativeExpr}"`);
+    const nativeParsed = parseSearchExpressionNative(nativeExpr);
+    console.log(`    Main term: "${nativeParsed.mainTerm}"`);
+    console.log(`    AND terms: [${nativeParsed.andTerms.map((t) => `"${t}"`).join(', ')}]`);
+    console.log(`    NOT terms: [${nativeParsed.notTerms.map((t) => `"${t}"`).join(', ')}]`);
+    console.log(`    Optional terms: [${nativeParsed.optionalTerms.map((t) => `"${t}"`).join(', ')}]`);
+    console.log('    Note: Native parser uses C++ for better performance');
+  } catch (error) {
+    console.log('    Native parser not available (using JavaScript fallback)');
+  }
+
+  // Example 12: Comparing native and JavaScript parsers
+  console.log('\n12. Parser comparison:');
+  const testExpr = '+golang tutorial -old';
+  console.log(`    Input: "${testExpr}"`);
+
+  const jsResult = simplifySearchExpression(testExpr);
+  console.log(
+    `    JavaScript: main="${jsResult.mainTerm}", and=[${jsResult.andTerms.join(', ')}], not=[${jsResult.notTerms.join(', ')}]`
+  );
+
+  try {
+    const nativeResult = parseSearchExpressionNative(testExpr);
+    console.log(
+      `    Native C++: main="${nativeResult.mainTerm}", and=[${nativeResult.andTerms.join(', ')}], not=[${nativeResult.notTerms.join(', ')}]`
+    );
+  } catch (error) {
+    console.log('    Native parser: Not available');
+  }
 }
 
 // Run example

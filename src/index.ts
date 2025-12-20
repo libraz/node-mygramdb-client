@@ -9,15 +9,17 @@
 
 export { MygramClient } from './client';
 export { NativeMygramClient } from './native-client';
-export { createMygramClient, isNativeAvailable, getClientType } from './client-factory';
+export { createMygramClient, isNativeAvailable, getClientType, simplifySearchExpression } from './client-factory';
 export {
   parseSearchExpression,
   convertSearchExpression,
-  simplifySearchExpression,
+  simplifySearchExpression as simplifySearchExpressionJS,
+  parseSearchExpressionNative,
   hasComplexExpression,
   toQueryString
 } from './search-expression';
 export type { SearchExpression } from './search-expression';
+export type { SimplifiedExpression } from './native-client';
 export type {
   ClientConfig,
   SearchResult,

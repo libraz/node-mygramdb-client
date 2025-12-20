@@ -9,8 +9,14 @@
 
 import { ClientConfig } from './types';
 import { MygramClient } from './client';
-import { NativeMygramClient } from './native-client';
+import { NativeMygramClient, SimplifiedExpression } from './native-client';
 import { tryLoadNative as loadNativeModule } from './native-loader';
+import { simplifySearchExpression as jsSimplifySearchExpression } from './search-expression';
+
+// Native binding interface for simplifySearchExpression
+interface NativeBindingWithParser {
+  simplifySearchExpression(expression: string): SimplifiedExpression;
+}
 
 let nativeBinding: unknown = null;
 let nativeAvailable = false;
@@ -98,4 +104,36 @@ export function isNativeAvailable(): boolean {
  */
 export function getClientType(client: MygramClient | NativeMygramClient): 'native' | 'javascript' {
   return client instanceof NativeMygramClient ? 'native' : 'javascript';
+}
+
+/**
+ * Parse web-style search expression into structured terms
+ *
+ * Uses native C++ implementation if available, otherwise falls back to JavaScript.
+ * This function converts expressions like "hello world" or "+required -excluded"
+ * into structured format for use with search() method.
+ *
+ * @param {string} expression - Web-style search expression
+ * @param {boolean} [forceJavaScript=false] - Force use of pure JavaScript implementation
+ * @returns {SimplifiedExpression} Parsed expression with mainTerm, andTerms, notTerms
+ *
+ * @example
+ * ```typescript
+ * // Parse space-separated terms as AND
+ * const expr = simplifySearchExpression('hello world');
+ * // expr = { mainTerm: 'hello', andTerms: ['world'], notTerms: [] }
+ *
+ * // Use with search
+ * const result = await client.search(table, expr.mainTerm, {
+ *   andTerms: expr.andTerms,
+ *   notTerms: expr.notTerms
+ * });
+ * ```
+ */
+export function simplifySearchExpression(expression: string, forceJavaScript = false): SimplifiedExpression {
+  if (!forceJavaScript && tryLoadNative()) {
+    const binding = nativeBinding as NativeBindingWithParser;
+    return binding.simplifySearchExpression(expression);
+  }
+  return jsSimplifySearchExpression(expression);
 }

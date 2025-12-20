@@ -25,6 +25,15 @@ import {
   ensureQueryLengthWithinLimit
 } from './command-utils';
 
+/**
+ * Result of parsing a web-style search expression
+ */
+export interface SimplifiedExpression {
+  mainTerm: string;
+  andTerms: string[];
+  notTerms: string[];
+}
+
 // Native binding interface
 interface NativeBinding {
   createClient(config: { host: string; port: number; timeout: number }): unknown;
@@ -35,6 +44,7 @@ interface NativeBinding {
   search(client: unknown, table: string, query: string, limit: number, offset: number): string;
   sendCommand(client: unknown, command: string): string;
   getLastError(client: unknown): string;
+  simplifySearchExpression(expression: string): SimplifiedExpression;
 }
 
 const DEFAULT_CONFIG: Required<ClientConfig> = {
@@ -286,10 +296,14 @@ export class NativeMygramClient {
    */
   async getConfig(): Promise<string> {
     const response = await this.sendCommand('CONFIG');
-    if (!response.startsWith('OK CONFIG')) {
-      throw new ProtocolError(`Invalid CONFIG response: ${response}`);
+    // Handle both "+OK\n..." and "OK CONFIG\n..." formats
+    if (response.startsWith('+OK\n')) {
+      return response.substring('+OK\n'.length);
     }
-    return response.substring('OK CONFIG\n'.length);
+    if (response.startsWith('OK CONFIG\n')) {
+      return response.substring('OK CONFIG\n'.length);
+    }
+    throw new ProtocolError(`Invalid CONFIG response: ${response}`);
   }
 
   /**
@@ -365,7 +379,9 @@ export class NativeMygramClient {
       }
 
       try {
-        const response = this.native.sendCommand(this.clientHandle, command);
+        const rawResponse = this.native.sendCommand(this.clientHandle, command);
+        // Normalize CRLF to LF for consistent parsing
+        const response = rawResponse.replace(/\r\n/g, '\n').trim();
         if (response.startsWith('ERROR ')) {
           throw new ProtocolError(response.substring(6));
         }
@@ -496,11 +512,57 @@ export class NativeMygramClient {
     return info as ServerInfo;
   }
 
+  /**
+   * Parse REPLICATION STATUS response
+   *
+   * Handles both single-line format:
+   *   OK REPLICATION status=running gtid=xxx
+   * And multi-line format:
+   *   OK REPLICATION
+   *   status: running
+   *   current_gtid: xxx
+   *   processed_events: 123
+   *   END
+   */
   private static parseReplicationStatusResponse(response: string): ReplicationStatus {
-    if (!response.startsWith('OK REPLICATION ')) {
+    if (!response.startsWith('OK REPLICATION')) {
       throw new ProtocolError(`Invalid REPLICATION STATUS response: ${response}`);
     }
 
+    const lines = response.split('\n');
+
+    // Check if multi-line format (first line is just "OK REPLICATION")
+    if (lines[0].trim() === 'OK REPLICATION') {
+      // Multi-line format
+      let running = false;
+      let gtid = '';
+
+      lines.slice(1).forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === 'END') return;
+
+        const colonIndex = trimmed.indexOf(':');
+        if (colonIndex === -1) return;
+
+        const key = trimmed.substring(0, colonIndex).trim();
+        const value = trimmed.substring(colonIndex + 1).trim();
+
+        switch (key) {
+          case 'status':
+            running = value === 'running';
+            break;
+          case 'current_gtid':
+            gtid = value;
+            break;
+          default:
+            break;
+        }
+      });
+
+      return { running, gtid, statusStr: response };
+    }
+
+    // Single-line format: OK REPLICATION status=running gtid=xxx
     const parts = response.substring(15).split(' ');
     const statusPart = parts.find((p) => p.startsWith('status='));
     const gtidPart = parts.find((p) => p.startsWith('gtid='));

@@ -3,6 +3,7 @@ import {
   parseSearchExpression,
   convertSearchExpression,
   simplifySearchExpression,
+  parseSearchExpressionNative,
   hasComplexExpression,
   toQueryString
 } from '../src/search-expression';
@@ -54,7 +55,8 @@ describe('parseSearchExpression', () => {
     const expr = parseSearchExpression('"machine learning" tutorial');
     expect(expr.requiredTerms).toEqual([]);
     expect(expr.excludedTerms).toEqual([]);
-    expect(expr.optionalTerms).toEqual(['machine learning', 'tutorial']);
+    // Quoted phrases preserve quotes for phrase search semantics
+    expect(expr.optionalTerms).toEqual(['"machine learning"', 'tutorial']);
   });
 
   it('should parse full-width spaces', () => {
@@ -174,7 +176,8 @@ describe('convertSearchExpression', () => {
 
   it('should handle quoted phrases', () => {
     const query = convertSearchExpression('"machine learning" tutorial');
-    expect(query).toBe('machine learning OR tutorial');
+    // Quotes preserved for phrase search
+    expect(query).toBe('"machine learning" OR tutorial');
   });
 });
 
@@ -209,6 +212,77 @@ describe('simplifySearchExpression', () => {
 
   it('should throw on expression with only excluded terms', () => {
     expect(() => simplifySearchExpression('-old -deprecated')).toThrow(
+      'Search expression must have at least one positive term'
+    );
+  });
+});
+
+describe('parseSearchExpressionNative', () => {
+  it('should parse simple terms using native parser', () => {
+    const result = parseSearchExpressionNative('golang tutorial');
+    expect(result.mainTerm).toBe('golang');
+    expect(result.andTerms).toEqual(['tutorial']);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should parse required and excluded terms using native parser', () => {
+    const result = parseSearchExpressionNative('+golang +tutorial -old -deprecated');
+    expect(result.mainTerm).toBe('golang');
+    expect(result.andTerms).toEqual(['tutorial']);
+    expect(result.notTerms).toEqual(['old', 'deprecated']);
+    expect(result.optionalTerms).toEqual([]);
+  });
+
+  it('should parse quoted phrases using native parser', () => {
+    const result = parseSearchExpressionNative('"machine learning" tutorial');
+    // Native parser includes quotes in the term
+    expect(result.mainTerm).toBe('"machine learning"');
+    expect(result.andTerms).toEqual(['tutorial']);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should parse full-width spaces using native parser', () => {
+    const result = parseSearchExpressionNative('機械学習　チュートリアル');
+    expect(result.mainTerm).toBe('機械学習');
+    expect(result.andTerms).toEqual(['チュートリアル']);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should parse complex expression with required, optional, and excluded terms', () => {
+    const result = parseSearchExpressionNative('+golang tutorial -old');
+    expect(result.mainTerm).toBe('golang');
+    expect(result.andTerms).toEqual(['tutorial']);
+    expect(result.notTerms).toEqual(['old']);
+  });
+
+  it('should handle single required term', () => {
+    const result = parseSearchExpressionNative('+golang');
+    expect(result.mainTerm).toBe('golang');
+    expect(result.andTerms).toEqual([]);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should parse multiple AND terms', () => {
+    const result = parseSearchExpressionNative('+golang +tutorial +guide');
+    expect(result.mainTerm).toBe('golang');
+    expect(result.andTerms).toEqual(['tutorial', 'guide']);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should parse mixed terms with quoted phrases', () => {
+    const result = parseSearchExpressionNative('+golang "best practices" -deprecated');
+    expect(result.mainTerm).toBe('golang');
+    // Native parser includes quotes in the term
+    expect(result.andTerms).toContain('"best practices"');
+    expect(result.notTerms).toEqual(['deprecated']);
+  });
+
+  it('should throw on empty expression', () => {
+    expect(() => parseSearchExpressionNative('')).toThrow();
+  });
+
+  it('should throw on expression with only excluded terms', () => {
+    expect(() => parseSearchExpressionNative('-old -deprecated')).toThrow(
       'Search expression must have at least one positive term'
     );
   });

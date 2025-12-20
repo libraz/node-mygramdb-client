@@ -3645,9 +3645,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"mygram-client@workspace:.":
+"mygramdb-client@workspace:.":
   version: 0.0.0-use.local
-  resolution: "mygram-client@workspace:."
+  resolution: "mygramdb-client@workspace:."
   dependencies:
     "@mapbox/node-pre-gyp": "npm:^2.0.0"
     "@types/bindings": "npm:^1"
