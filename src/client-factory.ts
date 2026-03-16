@@ -7,11 +7,11 @@
  * 2. Fall back to pure JavaScript implementation
  */
 
-import { ClientConfig } from './types';
-import { MygramClient } from './client';
-import { NativeMygramClient, SimplifiedExpression } from './native-client';
-import { tryLoadNative as loadNativeModule } from './native-loader';
-import { simplifySearchExpression as jsSimplifySearchExpression } from './search-expression';
+import { MygramClient } from './client.js';
+import { NativeMygramClient, type SimplifiedExpression } from './native-client.js';
+import { tryLoadNative as loadNativeModule } from './native-loader.js';
+import { simplifySearchExpression as jsSimplifySearchExpression } from './search-expression.js';
+import type { ClientConfig } from './types.js';
 
 // Native binding interface for simplifySearchExpression
 interface NativeBindingWithParser {
@@ -36,7 +36,7 @@ function tryLoadNative(): boolean {
     nativeBinding = loadNativeModule();
     nativeAvailable = nativeBinding !== null;
     return nativeAvailable;
-  } catch (error) {
+  } catch (_error) {
     // Native binding not available, will use pure JS fallback
     nativeAvailable = false;
     return false;

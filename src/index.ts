@@ -7,29 +7,31 @@
  * @packageDocumentation
  */
 
-export { MygramClient } from './client';
-export { NativeMygramClient } from './native-client';
-export { createMygramClient, isNativeAvailable, getClientType, simplifySearchExpression } from './client-factory';
+export { MygramClient } from './client.js';
+export { createMygramClient, getClientType, isNativeAvailable, simplifySearchExpression } from './client-factory.js';
+export { ConnectionError, InputValidationError, MygramError, ProtocolError, TimeoutError } from './errors.js';
+export type { SimplifiedExpression } from './native-client.js';
+export { NativeMygramClient } from './native-client.js';
+export type { SearchExpression } from './search-expression.js';
 export {
-  parseSearchExpression,
   convertSearchExpression,
-  simplifySearchExpression as simplifySearchExpressionJS,
-  parseSearchExpressionNative,
   hasComplexExpression,
+  parseSearchExpression,
+  parseSearchExpressionNative,
+  simplifySearchExpression as simplifySearchExpressionJS,
   toQueryString
-} from './search-expression';
-export type { SearchExpression } from './search-expression';
-export type { SimplifiedExpression } from './native-client';
+} from './search-expression.js';
 export type {
+  CacheStats,
   ClientConfig,
-  SearchResult,
-  SearchResponse,
+  CountOptions,
   CountResponse,
+  DebugInfo,
   Document,
-  ServerInfo,
+  DumpStatus,
   ReplicationStatus,
   SearchOptions,
-  CountOptions,
-  DebugInfo
-} from './types';
-export { MygramError, ConnectionError, ProtocolError, TimeoutError } from './errors';
+  SearchResponse,
+  SearchResult,
+  ServerInfo
+} from './types.js';

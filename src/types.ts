@@ -10,6 +10,15 @@ export interface ClientConfig {
   host?: string;
   /** Server port number */
   port?: number;
+  /**
+   * Unix domain socket path for local connections
+   *
+   * When set, the client connects via Unix socket instead of TCP.
+   * This bypasses TCP overhead and server-side rate limiting.
+   *
+   * @example '/tmp/mygramdb.sock'
+   */
+  socketPath?: string;
   /** Connection timeout in milliseconds */
   timeout?: number;
   /** Receive buffer size in bytes */
@@ -62,6 +71,14 @@ export interface DebugInfo {
   final: number;
   /** Optimization strategy used */
   optimization: string;
+  /** Sort specification (e.g. "id DESC") */
+  sort?: string;
+  /** Cache status (hit, miss, disabled) */
+  cache?: string;
+  /** Cache age in milliseconds (for cache hits) */
+  cacheAgeMs?: number;
+  /** Time saved by cache hit in milliseconds */
+  cacheSavedMs?: number;
   /** Limit value */
   limit?: number;
   /** Offset value */
@@ -152,4 +169,48 @@ export interface CountOptions {
   notTerms?: string[];
   /** Filter conditions as key-value pairs */
   filters?: Record<string, string>;
+}
+
+/**
+ * Dump operation status
+ */
+export interface DumpStatus {
+  /** Current status (saving, loading, idle, completed, failed) */
+  status: string;
+  /** File path of the dump */
+  filepath: string;
+  /** Total number of tables */
+  tablesTotal: number;
+  /** Number of tables processed */
+  tablesProcessed: number;
+  /** Currently processing table name */
+  currentTable: string;
+  /** Elapsed time in seconds */
+  elapsedSeconds: number;
+  /** Error message if status is failed */
+  error?: string;
+}
+
+/**
+ * Cache statistics
+ */
+export interface CacheStats {
+  /** Whether cache is enabled */
+  enabled: boolean;
+  /** Maximum cache memory in MB */
+  maxMemoryMb: number;
+  /** Current cache memory usage in MB */
+  currentMemoryMb: number;
+  /** Number of cached entries */
+  entries: number;
+  /** Cache hit count */
+  hits: number;
+  /** Cache miss count */
+  misses: number;
+  /** Cache hit rate percentage */
+  hitRate: number;
+  /** Number of cache evictions */
+  evictions: number;
+  /** Cache TTL in seconds */
+  ttlSeconds: number;
 }

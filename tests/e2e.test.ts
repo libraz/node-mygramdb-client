@@ -5,10 +5,10 @@
  * Tests are skipped if the server is not available.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MygramClient } from '../src/client';
-import { NativeMygramClient } from '../src/native-client';
-import { createMygramClient, isNativeAvailable, getClientType } from '../src/client-factory';
+import { createMygramClient, getClientType, isNativeAvailable } from '../src/client-factory';
+import type { NativeMygramClient } from '../src/native-client';
 import { simplifySearchExpression } from '../src/search-expression';
 
 const TEST_HOST = process.env.MYGRAM_HOST || '127.0.0.1';
@@ -34,10 +34,7 @@ async function isServerAvailable(): Promise<boolean> {
 /**
  * Shared test suite that works with both client implementations
  */
-function runClientTests(
-  clientName: string,
-  createClient: () => TestClient
-): void {
+function runClientTests(clientName: string, createClient: () => TestClient): void {
   describe(clientName, () => {
     let client: TestClient;
 
@@ -177,6 +174,20 @@ function runClientTests(
 
         expect(result.debug).toBeDefined();
         expect(typeof result.debug!.queryTimeMs).toBe('number');
+        expect(typeof result.debug!.optimization).toBe('string');
+        // New v1.4.0 debug fields are optional but should be string/number when present
+        if (result.debug!.sort !== undefined) {
+          expect(typeof result.debug!.sort).toBe('string');
+        }
+        if (result.debug!.cache !== undefined) {
+          expect(typeof result.debug!.cache).toBe('string');
+        }
+        if (result.debug!.cacheAgeMs !== undefined) {
+          expect(typeof result.debug!.cacheAgeMs).toBe('number');
+        }
+        if (result.debug!.cacheSavedMs !== undefined) {
+          expect(typeof result.debug!.cacheSavedMs).toBe('number');
+        }
       });
     });
 
@@ -361,14 +372,16 @@ describe('Integration Tests', async () => {
 
   describe.skipIf(!serverAvailable)('with real server', () => {
     // Test pure JavaScript client
-    runClientTests('MygramClient (JavaScript)', () =>
-      new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 })
+    runClientTests(
+      'MygramClient (JavaScript)',
+      () => new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 })
     );
 
     // Test native client if it actually works
     describe.skipIf(!nativeWorking)('NativeMygramClient (C++)', () => {
-      runClientTests('NativeMygramClient', () =>
-        createMygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 }) as NativeMygramClient
+      runClientTests(
+        'NativeMygramClient',
+        () => createMygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 }) as NativeMygramClient
       );
     });
 
@@ -400,6 +413,49 @@ describe('Integration Tests', async () => {
         const available = isNativeAvailable();
         expect(typeof available).toBe('boolean');
         console.log(`Native client available: ${available}`);
+      });
+    });
+
+    // Tests for new methods only available on MygramClient (JS)
+    describe('MygramClient new methods (JS only)', () => {
+      let jsClient: MygramClient;
+
+      beforeEach(async () => {
+        jsClient = new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 });
+        await jsClient.connect();
+      });
+
+      afterEach(() => {
+        jsClient.disconnect();
+      });
+
+      it('should get cache stats', async () => {
+        const stats = await jsClient.cacheStats();
+        expect(stats).toBeDefined();
+        expect(typeof stats.enabled).toBe('boolean');
+        expect(typeof stats.hits).toBe('number');
+        expect(typeof stats.misses).toBe('number');
+        expect(typeof stats.hitRate).toBe('number');
+      });
+
+      it('should clear cache without error', async () => {
+        await expect(jsClient.cacheClear()).resolves.not.toThrow();
+      });
+
+      it('should get dump status', async () => {
+        const status = await jsClient.dumpStatus();
+        expect(status).toBeDefined();
+        expect(typeof status.status).toBe('string');
+        expect(typeof status.tablesTotal).toBe('number');
+        expect(typeof status.tablesProcessed).toBe('number');
+        expect(typeof status.elapsedSeconds).toBe('number');
+      });
+
+      it('should optimize a specific table', async () => {
+        const serverInfo = await jsClient.info();
+        if (serverInfo.tables.length === 0) return;
+        const table = serverInfo.tables[0];
+        await expect(jsClient.optimize(table)).resolves.not.toThrow();
       });
     });
   });

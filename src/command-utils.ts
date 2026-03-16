@@ -1,4 +1,4 @@
-import { InputValidationError } from './errors';
+import { InputValidationError } from './errors.js';
 
 export const DEFAULT_MAX_QUERY_LENGTH = 128;
 
@@ -23,11 +23,11 @@ function isControlCharacter(char: string): boolean {
 function getControlCharDescription(char: string): string {
   const code = char.charCodeAt(0);
   const specialChars: Record<number, string> = {
-    0x00: 'null byte (\\0)',
-    0x09: 'tab (\\t)',
-    0x0a: 'line feed (\\n)',
-    0x0d: 'carriage return (\\r)',
-    0x7f: 'delete (DEL)'
+    0: 'null byte (\\0)',
+    9: 'tab (\\t)',
+    10: 'line feed (\\n)',
+    13: 'carriage return (\\r)',
+    127: 'delete (DEL)'
   };
   return specialChars[code] || `control character 0x${code.toString(16).toUpperCase().padStart(2, '0')}`;
 }

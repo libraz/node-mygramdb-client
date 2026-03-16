@@ -1,10 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  parseSearchExpression,
   convertSearchExpression,
-  simplifySearchExpression,
-  parseSearchExpressionNative,
   hasComplexExpression,
+  parseSearchExpression,
+  parseSearchExpressionNative,
+  simplifySearchExpression,
   toQueryString
 } from '../src/search-expression';
 

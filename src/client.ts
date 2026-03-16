@@ -2,31 +2,34 @@
  * MygramDB Client Implementation
  */
 
-import { Socket } from 'net';
-import {
-  ClientConfig,
-  SearchResult,
-  SearchResponse,
-  CountResponse,
-  Document,
-  ServerInfo,
-  ReplicationStatus,
-  SearchOptions,
-  CountOptions,
-  DebugInfo
-} from './types';
-import { ConnectionError, ProtocolError, TimeoutError } from './errors';
+import { Socket } from 'node:net';
 import {
   DEFAULT_MAX_QUERY_LENGTH,
+  ensureQueryLengthWithinLimit,
   ensureSafeCommandValue,
   ensureSafeFilters,
-  ensureSafeStringArray,
-  ensureQueryLengthWithinLimit
-} from './command-utils';
+  ensureSafeStringArray
+} from './command-utils.js';
+import { ConnectionError, ProtocolError, TimeoutError } from './errors.js';
+import type {
+  CacheStats,
+  ClientConfig,
+  CountOptions,
+  CountResponse,
+  DebugInfo,
+  Document,
+  DumpStatus,
+  ReplicationStatus,
+  SearchOptions,
+  SearchResponse,
+  SearchResult,
+  ServerInfo
+} from './types.js';
 
 const DEFAULT_CONFIG: Required<ClientConfig> = {
   host: '127.0.0.1',
   port: 11016,
+  socketPath: '',
   timeout: 5000,
   recvBufferSize: 65536,
   maxQueryLength: DEFAULT_MAX_QUERY_LENGTH
@@ -122,7 +125,11 @@ export class MygramClient {
         }
       });
 
-      this.socket.connect(this.config.port, this.config.host);
+      if (this.config.socketPath) {
+        this.socket.connect({ path: this.config.socketPath });
+      } else {
+        this.socket.connect(this.config.port, this.config.host);
+      }
     });
   }
 
@@ -409,6 +416,163 @@ export class MygramClient {
   }
 
   /**
+   * Save a dump of the index to the specified file path
+   *
+   * This operation is asynchronous on the server side. Use {@link dumpStatus}
+   * to monitor progress.
+   *
+   * @param {string} filepath - File path on the server to save the dump
+   * @returns {Promise<string>} The filepath where the dump is being saved
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async dumpSave(filepath: string): Promise<string> {
+    const safeFilepath = ensureSafeCommandValue(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP SAVE ${safeFilepath}`);
+    if (response.startsWith('OK DUMP_STARTED ')) {
+      return response.substring('OK DUMP_STARTED '.length);
+    }
+    if (response.startsWith('OK DUMP_SAVED ')) {
+      return response.substring('OK DUMP_SAVED '.length);
+    }
+    throw new ProtocolError(`Invalid DUMP SAVE response: ${response}`);
+  }
+
+  /**
+   * Load a dump from the specified file path
+   *
+   * @param {string} filepath - File path on the server to load the dump from
+   * @returns {Promise<void>} Resolves when the dump is loaded
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async dumpLoad(filepath: string): Promise<void> {
+    const safeFilepath = ensureSafeCommandValue(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP LOAD ${safeFilepath}`);
+    if (!response.startsWith('OK')) {
+      throw new ProtocolError(`Failed to load dump: ${response}`);
+    }
+  }
+
+  /**
+   * Get the status of an ongoing dump operation
+   *
+   * @returns {Promise<DumpStatus>} Current dump operation status
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async dumpStatus(): Promise<DumpStatus> {
+    const response = await this.sendCommand('DUMP STATUS');
+    return MygramClient.parseDumpStatusResponse(response);
+  }
+
+  /**
+   * Verify the integrity of a dump file
+   *
+   * @param {string} filepath - File path of the dump to verify
+   * @returns {Promise<string>} Verification result message
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async dumpVerify(filepath: string): Promise<string> {
+    const safeFilepath = ensureSafeCommandValue(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP VERIFY ${safeFilepath}`);
+    if (!response.startsWith('OK')) {
+      throw new ProtocolError(`Failed to verify dump: ${response}`);
+    }
+    return response;
+  }
+
+  /**
+   * Get metadata information about a dump file
+   *
+   * @param {string} filepath - File path of the dump to inspect
+   * @returns {Promise<string>} Dump metadata as a string
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async dumpInfo(filepath: string): Promise<string> {
+    const safeFilepath = ensureSafeCommandValue(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP INFO ${safeFilepath}`);
+    if (!response.startsWith('OK')) {
+      throw new ProtocolError(`Failed to get dump info: ${response}`);
+    }
+    return response;
+  }
+
+  /**
+   * Get cache statistics
+   *
+   * @returns {Promise<CacheStats>} Cache statistics
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async cacheStats(): Promise<CacheStats> {
+    const response = await this.sendCommand('CACHE STATS');
+    return MygramClient.parseCacheStatsResponse(response);
+  }
+
+  /**
+   * Clear the query cache
+   *
+   * @param {string} [table] - Optional table name to clear cache for; clears all if omitted
+   * @returns {Promise<void>} Resolves when cache is cleared
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async cacheClear(table?: string): Promise<void> {
+    const command = table ? `CACHE CLEAR ${ensureSafeCommandValue(table, 'table')}` : 'CACHE CLEAR';
+    const response = await this.sendCommand(command);
+    if (!response.startsWith('OK')) {
+      throw new ProtocolError(`Failed to clear cache: ${response}`);
+    }
+  }
+
+  /**
+   * Enable the query cache
+   *
+   * @returns {Promise<void>} Resolves when cache is enabled
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async cacheEnable(): Promise<void> {
+    const response = await this.sendCommand('CACHE ENABLE');
+    if (!response.startsWith('OK')) {
+      throw new ProtocolError(`Failed to enable cache: ${response}`);
+    }
+  }
+
+  /**
+   * Disable the query cache
+   *
+   * @returns {Promise<void>} Resolves when cache is disabled
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async cacheDisable(): Promise<void> {
+    const response = await this.sendCommand('CACHE DISABLE');
+    if (!response.startsWith('OK')) {
+      throw new ProtocolError(`Failed to disable cache: ${response}`);
+    }
+  }
+
+  /**
+   * Optimize (rebuild) the index for a table or all tables
+   *
+   * @param {string} [table] - Optional table name to optimize; optimizes all if omitted
+   * @returns {Promise<void>} Resolves when optimization completes
+   * @throws {ConnectionError} If not connected to server
+   * @throws {ProtocolError} If server returns an error
+   */
+  async optimize(table?: string): Promise<void> {
+    const command = table ? `OPTIMIZE ${ensureSafeCommandValue(table, 'table')}` : 'OPTIMIZE';
+    const response = await this.sendCommand(command);
+    if (!response.startsWith('OK')) {
+      throw new ProtocolError(`Failed to optimize: ${response}`);
+    }
+  }
+
+  /**
    * Send raw command to server
    *
    * This is a low-level interface for sending custom commands.
@@ -436,7 +600,7 @@ export class MygramClient {
       }, this.config.timeout);
 
       // Send command
-      this.socket!.write(`${command}\r\n`);
+      this.socket?.write(`${command}\r\n`);
     });
   }
 
@@ -466,7 +630,9 @@ export class MygramClient {
     if (
       this.responseBuffer.includes('OK INFO\n') ||
       this.responseBuffer.includes('OK CONFIG\n') ||
-      this.responseBuffer.startsWith('+OK\n')
+      this.responseBuffer.startsWith('+OK\n') ||
+      this.responseBuffer.includes('OK DUMP_STATUS\n') ||
+      this.responseBuffer.includes('OK CACHE_STATS\n')
     ) {
       // Multi-line response
       if (this.isMultiLineResponseComplete()) {
@@ -541,7 +707,7 @@ export class MygramClient {
 
     // Parse debug info if present
     let debug: DebugInfo | undefined;
-    const debugIndex = lines.findIndex((line) => line === '# DEBUG');
+    const debugIndex = lines.indexOf('# DEBUG');
     if (debugIndex !== -1) {
       debug = MygramClient.parseDebugInfo(lines.slice(debugIndex + 1));
     }
@@ -564,7 +730,7 @@ export class MygramClient {
 
     // Parse debug info if present
     let debug: DebugInfo | undefined;
-    const debugIndex = lines.findIndex((line) => line === '# DEBUG');
+    const debugIndex = lines.indexOf('# DEBUG');
     if (debugIndex !== -1) {
       debug = MygramClient.parseDebugInfo(lines.slice(debugIndex + 1));
     }
@@ -770,6 +936,18 @@ export class MygramClient {
         case 'optimization':
           debug.optimization = value;
           break;
+        case 'sort':
+          debug.sort = value;
+          break;
+        case 'cache':
+          debug.cache = value;
+          break;
+        case 'cache_age_ms':
+          debug.cacheAgeMs = parseFloat(value);
+          break;
+        case 'cache_saved_ms':
+          debug.cacheSavedMs = parseFloat(value);
+          break;
         case 'limit':
           debug.limit = parseInt(value.replace('(default)', '').trim(), 10);
           break;
@@ -782,5 +960,130 @@ export class MygramClient {
     });
 
     return debug as DebugInfo;
+  }
+
+  /**
+   * Parse DUMP STATUS response
+   */
+  private static parseDumpStatusResponse(response: string): DumpStatus {
+    if (!response.startsWith('OK DUMP_STATUS')) {
+      throw new ProtocolError(`Invalid DUMP STATUS response: ${response}`);
+    }
+
+    const status: Partial<DumpStatus> = {
+      status: 'idle',
+      filepath: '',
+      tablesTotal: 0,
+      tablesProcessed: 0,
+      currentTable: '',
+      elapsedSeconds: 0
+    };
+
+    const lines = response.split('\n').slice(1);
+    lines.forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      const colonIndex = trimmed.indexOf(':');
+      if (colonIndex === -1) return;
+
+      const key = trimmed.substring(0, colonIndex).trim();
+      const value = trimmed.substring(colonIndex + 1).trim();
+
+      switch (key) {
+        case 'status':
+          status.status = value;
+          break;
+        case 'filepath':
+          status.filepath = value;
+          break;
+        case 'tables_total':
+          status.tablesTotal = parseInt(value, 10);
+          break;
+        case 'tables_processed':
+          status.tablesProcessed = parseInt(value, 10);
+          break;
+        case 'current_table':
+          status.currentTable = value;
+          break;
+        case 'elapsed_seconds':
+          status.elapsedSeconds = parseFloat(value);
+          break;
+        case 'error':
+          status.error = value;
+          break;
+        default:
+          break;
+      }
+    });
+
+    return status as DumpStatus;
+  }
+
+  /**
+   * Parse CACHE STATS response
+   */
+  private static parseCacheStatsResponse(response: string): CacheStats {
+    if (!response.startsWith('OK CACHE_STATS')) {
+      throw new ProtocolError(`Invalid CACHE STATS response: ${response}`);
+    }
+
+    const stats: Partial<CacheStats> = {
+      enabled: false,
+      maxMemoryMb: 0,
+      currentMemoryMb: 0,
+      entries: 0,
+      hits: 0,
+      misses: 0,
+      hitRate: 0,
+      evictions: 0,
+      ttlSeconds: 0
+    };
+
+    const lines = response.split('\n').slice(1);
+    lines.forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      const colonIndex = trimmed.indexOf(':');
+      if (colonIndex === -1) return;
+
+      const key = trimmed.substring(0, colonIndex).trim();
+      const value = trimmed.substring(colonIndex + 1).trim();
+
+      switch (key) {
+        case 'enabled':
+          stats.enabled = value === 'true';
+          break;
+        case 'max_memory_mb':
+          stats.maxMemoryMb = parseFloat(value);
+          break;
+        case 'current_memory_mb':
+          stats.currentMemoryMb = parseFloat(value);
+          break;
+        case 'entries':
+          stats.entries = parseInt(value, 10);
+          break;
+        case 'hits':
+          stats.hits = parseInt(value, 10);
+          break;
+        case 'misses':
+          stats.misses = parseInt(value, 10);
+          break;
+        case 'hit_rate':
+          stats.hitRate = parseFloat(value.replace('%', ''));
+          break;
+        case 'evictions':
+          stats.evictions = parseInt(value, 10);
+          break;
+        case 'ttl_seconds':
+          stats.ttlSeconds = parseInt(value, 10);
+          break;
+        default:
+          break;
+      }
+    });
+
+    return stats as CacheStats;
   }
 }

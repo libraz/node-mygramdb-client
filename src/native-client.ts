@@ -6,24 +6,24 @@
  */
 
 import {
-  ClientConfig,
-  SearchResponse,
-  CountResponse,
-  Document,
-  ServerInfo,
-  ReplicationStatus,
-  SearchOptions,
-  CountOptions,
-  DebugInfo
-} from './types';
-import { ConnectionError, ProtocolError } from './errors';
-import {
   DEFAULT_MAX_QUERY_LENGTH,
+  ensureQueryLengthWithinLimit,
   ensureSafeCommandValue,
   ensureSafeFilters,
-  ensureSafeStringArray,
-  ensureQueryLengthWithinLimit
-} from './command-utils';
+  ensureSafeStringArray
+} from './command-utils.js';
+import { ConnectionError, ProtocolError } from './errors.js';
+import type {
+  ClientConfig,
+  CountOptions,
+  CountResponse,
+  DebugInfo,
+  Document,
+  ReplicationStatus,
+  SearchOptions,
+  SearchResponse,
+  ServerInfo
+} from './types.js';
 
 /**
  * Result of parsing a web-style search expression
@@ -50,6 +50,7 @@ interface NativeBinding {
 const DEFAULT_CONFIG: Required<ClientConfig> = {
   host: '127.0.0.1',
   port: 11016,
+  socketPath: '',
   timeout: 5000,
   recvBufferSize: 65536,
   maxQueryLength: DEFAULT_MAX_QUERY_LENGTH
@@ -413,7 +414,7 @@ export class NativeMygramClient {
     const results = ids.map((id) => ({ primaryKey: id }));
 
     let debug: DebugInfo | undefined;
-    const debugIndex = lines.findIndex((line) => line === '# DEBUG');
+    const debugIndex = lines.indexOf('# DEBUG');
     if (debugIndex !== -1) {
       debug = NativeMygramClient.parseDebugInfo(lines.slice(debugIndex + 1));
     }
@@ -432,7 +433,7 @@ export class NativeMygramClient {
     const count = parseInt(firstLine.split(' ')[2], 10);
 
     let debug: DebugInfo | undefined;
-    const debugIndex = lines.findIndex((line) => line === '# DEBUG');
+    const debugIndex = lines.indexOf('# DEBUG');
     if (debugIndex !== -1) {
       debug = NativeMygramClient.parseDebugInfo(lines.slice(debugIndex + 1));
     }

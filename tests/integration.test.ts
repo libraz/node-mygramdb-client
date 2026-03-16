@@ -5,15 +5,18 @@
  * They can run in CI environments.
  */
 
-import { describe, it, expect } from 'vitest';
-import { simplifySearchExpression as jsSimplifySearchExpression, parseSearchExpression } from '../src/search-expression';
-import {
-  createMygramClient,
-  isNativeAvailable,
-  getClientType,
-  simplifySearchExpression as autoSimplifySearchExpression
-} from '../src/client-factory';
+import { describe, expect, it } from 'vitest';
 import { MygramClient } from '../src/client';
+import {
+  simplifySearchExpression as autoSimplifySearchExpression,
+  createMygramClient,
+  getClientType,
+  isNativeAvailable
+} from '../src/client-factory';
+import {
+  simplifySearchExpression as jsSimplifySearchExpression,
+  parseSearchExpression
+} from '../src/search-expression';
 
 // Use the JS implementation for existing tests to maintain consistency
 const simplifySearchExpression = jsSimplifySearchExpression;
@@ -222,7 +225,6 @@ describe('Client Factory', () => {
     });
 
     it('should handle Japanese text with full-width space', () => {
-      // eslint-disable-next-line no-irregular-whitespace
       const expr = autoSimplifySearchExpression('機械学習　チュートリアル');
 
       expect(expr.mainTerm).toBe('機械学習');
@@ -234,13 +236,14 @@ describe('Client Factory', () => {
 /**
  * Helper to build search command from parsed expression
  */
-function buildSearchCommand(
-  table: string,
-  expr: { mainTerm: string; andTerms: string[]; notTerms: string[] }
-): string {
+function buildSearchCommand(table: string, expr: { mainTerm: string; andTerms: string[]; notTerms: string[] }): string {
   const parts = ['SEARCH', table, expr.mainTerm];
-  expr.andTerms.forEach((term) => parts.push('AND', term));
-  expr.notTerms.forEach((term) => parts.push('NOT', term));
+  for (const term of expr.andTerms) {
+    parts.push('AND', term);
+  }
+  for (const term of expr.notTerms) {
+    parts.push('NOT', term);
+  }
   return parts.join(' ');
 }
 
@@ -321,7 +324,6 @@ describe('Search Command Generation', () => {
 
   describe('Japanese text', () => {
     it('should handle full-width space as AND separator', () => {
-      // eslint-disable-next-line no-irregular-whitespace
       const expr = autoSimplifySearchExpression('機械学習　チュートリアル');
       const cmd = buildSearchCommand('tbl', expr);
       expect(cmd).toBe('SEARCH tbl 機械学習 AND チュートリアル');
@@ -331,6 +333,30 @@ describe('Search Command Generation', () => {
       const expr = autoSimplifySearchExpression('+機械学習 -古い');
       const cmd = buildSearchCommand('tbl', expr);
       expect(cmd).toBe('SEARCH tbl 機械学習 NOT 古い');
+    });
+  });
+});
+
+describe('Client Configuration', () => {
+  describe('Unix socket support', () => {
+    it('should accept socketPath in config', () => {
+      const client = new MygramClient({ socketPath: '/tmp/mygramdb.sock' });
+      expect(client).toBeDefined();
+      expect(client.isConnected()).toBe(false);
+    });
+
+    it('should prefer socketPath over host/port when both specified', () => {
+      const client = new MygramClient({
+        host: '10.0.0.1',
+        port: 12345,
+        socketPath: '/tmp/mygramdb.sock'
+      });
+      expect(client).toBeDefined();
+    });
+
+    it('should use TCP when socketPath is empty string', () => {
+      const client = new MygramClient({ socketPath: '', host: '127.0.0.1', port: 11016 });
+      expect(client).toBeDefined();
     });
   });
 });
@@ -345,8 +371,12 @@ describe('Protocol Response Parsing', () => {
       const notTerms = ['excluded'];
 
       const parts = ['SEARCH', table, query];
-      andTerms.forEach((term) => parts.push('AND', term));
-      notTerms.forEach((term) => parts.push('NOT', term));
+      for (const term of andTerms) {
+        parts.push('AND', term);
+      }
+      for (const term of notTerms) {
+        parts.push('NOT', term);
+      }
       parts.push('LIMIT', '100');
 
       const command = parts.join(' ');
@@ -359,7 +389,9 @@ describe('Protocol Response Parsing', () => {
       const andTerms = ['verified'];
 
       const parts = ['COUNT', table, query];
-      andTerms.forEach((term) => parts.push('AND', term));
+      for (const term of andTerms) {
+        parts.push('AND', term);
+      }
 
       const command = parts.join(' ');
       expect(command).toBe('COUNT users active AND verified');
@@ -417,6 +449,96 @@ optimization: early-exit`;
       expect(debugInfo.ngrams).toBe(6);
       expect(debugInfo.candidates).toBe(100);
       expect(debugInfo.optimization).toBe('early-exit');
+    });
+
+    it('should parse extended debug info with cache and sort fields', () => {
+      const debugSection = `# DEBUG
+query_time: 12.345ms
+index_time: 5.123ms
+filter_time: 0.456ms
+terms: 2
+ngrams: 8
+candidates: 1234
+after_intersection: 456
+after_not: 400
+after_filters: 350
+final: 100
+optimization: bitmap-filter
+sort: id DESC
+limit: 100
+offset: 0
+cache: hit
+cache_age_ms: 123.456
+cache_saved_ms: 234.567`;
+
+      const lines = debugSection.split('\n').slice(1);
+      const debugInfo: Record<string, string | number> = {};
+
+      lines.forEach((line) => {
+        const [key, value] = line.split(':').map((s) => s.trim());
+        if (key && value) {
+          if (key.endsWith('_time') || key.endsWith('_ms')) {
+            debugInfo[key] = parseFloat(value);
+          } else if (
+            ['terms', 'ngrams', 'candidates', 'after_intersection', 'after_not', 'after_filters', 'final'].includes(key)
+          ) {
+            debugInfo[key] = parseInt(value, 10);
+          } else {
+            debugInfo[key] = value;
+          }
+        }
+      });
+
+      expect(debugInfo.optimization).toBe('bitmap-filter');
+      expect(debugInfo.sort).toBe('id DESC');
+      expect(debugInfo.cache).toBe('hit');
+      expect(debugInfo.cache_age_ms).toBe(123.456);
+      expect(debugInfo.cache_saved_ms).toBe(234.567);
+      expect(debugInfo.filter_time).toBe(0.456);
+      expect(debugInfo.after_not).toBe(400);
+      expect(debugInfo.after_filters).toBe(350);
+    });
+
+    it('should parse cache miss debug info', () => {
+      const debugSection = `# DEBUG
+query_time: 5.0ms
+cache: miss (not found)`;
+
+      const lines = debugSection.split('\n').slice(1);
+      const debugInfo: Record<string, string | number> = {};
+
+      lines.forEach((line) => {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx === -1) return;
+        const key = line.substring(0, colonIdx).trim();
+        const value = line.substring(colonIdx + 1).trim();
+        if (key && value) {
+          debugInfo[key] = value;
+        }
+      });
+
+      expect(debugInfo.cache).toBe('miss (not found)');
+    });
+
+    it('should parse cache disabled debug info', () => {
+      const debugSection = `# DEBUG
+query_time: 5.0ms
+cache: disabled`;
+
+      const lines = debugSection.split('\n').slice(1);
+      const debugInfo: Record<string, string | number> = {};
+
+      lines.forEach((line) => {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx === -1) return;
+        const key = line.substring(0, colonIdx).trim();
+        const value = line.substring(colonIdx + 1).trim();
+        if (key && value) {
+          debugInfo[key] = value;
+        }
+      });
+
+      expect(debugInfo.cache).toBe('disabled');
     });
   });
 
@@ -527,6 +649,206 @@ api:
       expect(response.startsWith('OK CONFIG')).toBe(true);
       const config = response.substring('OK CONFIG\n'.length);
       expect(config).toContain('api:');
+    });
+  });
+
+  describe('DUMP STATUS response parsing', () => {
+    it('should parse idle dump status', () => {
+      const response = `OK DUMP_STATUS
+status: idle
+filepath:
+tables_total: 0
+tables_processed: 0
+current_table:
+elapsed_seconds: 0`;
+
+      const lines = response.split('\n').slice(1);
+      const status: Record<string, string | number> = {};
+
+      lines.forEach((line) => {
+        const colonIndex = line.indexOf(':');
+        if (colonIndex === -1) return;
+        const key = line.substring(0, colonIndex).trim();
+        const value = line.substring(colonIndex + 1).trim();
+        if (key) {
+          status[key] = value;
+        }
+      });
+
+      expect(status.status).toBe('idle');
+      expect(status.tables_total).toBe('0');
+    });
+
+    it('should parse active dump status', () => {
+      const response = `OK DUMP_STATUS
+status: saving
+filepath: /data/dump.bin
+tables_total: 3
+tables_processed: 1
+current_table: articles
+elapsed_seconds: 12.5`;
+
+      const lines = response.split('\n').slice(1);
+      const status: Record<string, string | number> = {};
+
+      lines.forEach((line) => {
+        const colonIndex = line.indexOf(':');
+        if (colonIndex === -1) return;
+        const key = line.substring(0, colonIndex).trim();
+        const value = line.substring(colonIndex + 1).trim();
+        if (key) {
+          status[key] = value;
+        }
+      });
+
+      expect(status.status).toBe('saving');
+      expect(status.filepath).toBe('/data/dump.bin');
+      expect(status.current_table).toBe('articles');
+    });
+
+    it('should parse failed dump status with error', () => {
+      const response = `OK DUMP_STATUS
+status: failed
+filepath: /data/dump.bin
+tables_total: 3
+tables_processed: 1
+current_table: articles
+elapsed_seconds: 5.0
+error: disk full`;
+
+      const lines = response.split('\n').slice(1);
+      const status: Record<string, string | number> = {};
+
+      lines.forEach((line) => {
+        const colonIndex = line.indexOf(':');
+        if (colonIndex === -1) return;
+        const key = line.substring(0, colonIndex).trim();
+        const value = line.substring(colonIndex + 1).trim();
+        if (key) {
+          status[key] = value;
+        }
+      });
+
+      expect(status.status).toBe('failed');
+      expect(status.error).toBe('disk full');
+    });
+
+    it('should handle DUMP SAVE async response', () => {
+      const response = 'OK DUMP_STARTED /data/dump.bin';
+      expect(response.startsWith('OK DUMP_STARTED ')).toBe(true);
+      const filepath = response.substring('OK DUMP_STARTED '.length);
+      expect(filepath).toBe('/data/dump.bin');
+    });
+
+    it('should handle legacy DUMP SAVE sync response', () => {
+      const response = 'OK DUMP_SAVED /data/dump.bin';
+      expect(response.startsWith('OK DUMP_SAVED ')).toBe(true);
+      const filepath = response.substring('OK DUMP_SAVED '.length);
+      expect(filepath).toBe('/data/dump.bin');
+    });
+  });
+
+  describe('CACHE STATS response parsing', () => {
+    it('should parse cache stats response', () => {
+      const response = `OK CACHE_STATS
+enabled: true
+max_memory_mb: 32
+current_memory_mb: 12.3
+entries: 45
+hits: 1234
+misses: 567
+hit_rate: 68.5%
+evictions: 10
+ttl_seconds: 3600`;
+
+      const lines = response.split('\n').slice(1);
+      const stats: Record<string, string | number | boolean> = {};
+
+      lines.forEach((line) => {
+        const colonIndex = line.indexOf(':');
+        if (colonIndex === -1) return;
+        const key = line.substring(0, colonIndex).trim();
+        const value = line.substring(colonIndex + 1).trim();
+        if (!key) return;
+
+        switch (key) {
+          case 'enabled':
+            stats[key] = value === 'true';
+            break;
+          case 'hit_rate':
+            stats[key] = parseFloat(value.replace('%', ''));
+            break;
+          case 'max_memory_mb':
+          case 'current_memory_mb':
+            stats[key] = parseFloat(value);
+            break;
+          default:
+            stats[key] = parseInt(value, 10);
+            break;
+        }
+      });
+
+      expect(stats.enabled).toBe(true);
+      expect(stats.max_memory_mb).toBe(32);
+      expect(stats.current_memory_mb).toBe(12.3);
+      expect(stats.entries).toBe(45);
+      expect(stats.hits).toBe(1234);
+      expect(stats.misses).toBe(567);
+      expect(stats.hit_rate).toBe(68.5);
+      expect(stats.evictions).toBe(10);
+      expect(stats.ttl_seconds).toBe(3600);
+    });
+
+    it('should parse disabled cache stats', () => {
+      const response = `OK CACHE_STATS
+enabled: false
+max_memory_mb: 0
+current_memory_mb: 0
+entries: 0
+hits: 0
+misses: 0
+hit_rate: 0%
+evictions: 0
+ttl_seconds: 0`;
+
+      expect(response.startsWith('OK CACHE_STATS')).toBe(true);
+      const lines = response.split('\n').slice(1);
+      const enabledLine = lines.find((l) => l.trim().startsWith('enabled:'));
+      expect(enabledLine).toBeDefined();
+      expect(enabledLine!.includes('false')).toBe(true);
+    });
+  });
+
+  describe('CRLF handling in multi-line responses', () => {
+    it('should normalize CRLF in CONFIG response', () => {
+      const crlfResponse = 'OK CONFIG\r\napi:\r\n  port: 11016\r\n  host: 0.0.0.0\r\n\r\n';
+      const normalized = crlfResponse.replace(/\r\n/g, '\n').trim();
+
+      expect(normalized).toBe('OK CONFIG\napi:\n  port: 11016\n  host: 0.0.0.0');
+      expect(normalized).not.toContain('\r');
+    });
+
+    it('should normalize CRLF in REPLICATION STATUS response', () => {
+      const crlfResponse = 'OK REPLICATION\r\nstatus: running\r\ncurrent_gtid: mysql-bin.000001:12345\r\nEND\r\n';
+      const normalized = crlfResponse.replace(/\r\n/g, '\n').trim();
+
+      expect(normalized).toContain('status: running');
+      expect(normalized).toContain('END');
+      expect(normalized).not.toContain('\r');
+    });
+
+    it('should normalize CRLF in DUMP STATUS response', () => {
+      const crlfResponse = 'OK DUMP_STATUS\r\nstatus: idle\r\nfilepath:\r\n\r\n';
+      const normalized = crlfResponse.replace(/\r\n/g, '\n').trim();
+
+      expect(normalized).toBe('OK DUMP_STATUS\nstatus: idle\nfilepath:');
+    });
+
+    it('should normalize CRLF in CACHE STATS response', () => {
+      const crlfResponse = 'OK CACHE_STATS\r\nenabled: true\r\nhits: 100\r\n\r\n';
+      const normalized = crlfResponse.replace(/\r\n/g, '\n').trim();
+
+      expect(normalized).toBe('OK CACHE_STATS\nenabled: true\nhits: 100');
     });
   });
 });

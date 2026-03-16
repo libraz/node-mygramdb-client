@@ -3,34 +3,32 @@
  *
  * This loader is based on node-darts implementation and handles
  * various build configurations and CI environments.
+ * ESM-compatible using import.meta.url and createRequire.
  */
-/* eslint-disable no-console */
-/* eslint-disable import/no-dynamic-require */
-/* eslint-disable global-require */
-/* eslint-disable @typescript-eslint/no-var-requires */
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-/* eslint-disable @typescript-eslint/no-unsafe-call */
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-/* eslint-disable @typescript-eslint/no-unsafe-argument */
-import * as path from 'path';
-import * as fs from 'fs';
+
+import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const esmRequire = createRequire(import.meta.url);
+const currentFilename = fileURLToPath(import.meta.url);
+const currentDirname = path.dirname(currentFilename);
 
 // Detect environment
 const runtimePlatform = process.platform;
 const runtimeArch = process.arch;
 const isWindows = runtimePlatform === 'win32';
-const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
 const nodeABI = process.versions.modules;
 
 /**
  * Get all possible paths for the native module
  */
 function getNativePaths(): string[] {
-  // When bundled, __dirname points to dist/
+  // When bundled, currentDirname points to dist/
   // We need to go up to the package root
-  const distPath = __dirname;
-  const isInDist = distPath.endsWith('dist') || distPath.includes('/dist/');
-  const basePath = isInDist ? path.join(__dirname, '..') : __dirname;
+  const isInDist = currentDirname.endsWith('dist') || currentDirname.includes('/dist/');
+  const basePath = isInDist ? path.join(currentDirname, '..') : currentDirname;
 
   const moduleName = 'mygram_native.node';
 
@@ -58,8 +56,8 @@ function getNativePaths(): string[] {
       : []),
 
     // Relative to current file
-    path.join(__dirname, '..', 'build', 'Release', moduleName),
-    path.join(__dirname, '..', 'build', 'Debug', moduleName)
+    path.join(currentDirname, '..', 'build', 'Release', moduleName),
+    path.join(currentDirname, '..', 'build', 'Debug', moduleName)
   ];
 
   return paths;
@@ -71,47 +69,18 @@ function getNativePaths(): string[] {
 export function loadNativeModule(): unknown {
   const paths = getNativePaths();
 
-  if (isCI && isWindows) {
-    console.log('[mygram-client] Running in Windows CI environment');
-    console.log('[mygram-client] Node ABI:', nodeABI);
-    console.log('[mygram-client] Platform:', runtimePlatform);
-    console.log('[mygram-client] Arch:', runtimeArch);
-    console.log('[mygram-client] Searching for native module in the following paths:');
-    paths.forEach((p, i) => {
-      const exists = fs.existsSync(p);
-      console.log(`  [${i + 1}] ${exists ? '✓' : '✗'} ${p}`);
-    });
-  }
-
   // Try each path
   for (const modulePath of paths) {
     try {
       if (fs.existsSync(modulePath)) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-        const module = require(modulePath);
-
-        if (isCI && isWindows) {
-          console.log('[mygram-client] ✓ Successfully loaded native module from:', modulePath);
-        }
-
-        return module;
+        return esmRequire(modulePath);
       }
-    } catch (error) {
+    } catch (_error) {
       // Continue to next path
-      if (isCI && isWindows) {
-        console.log('[mygram-client] ✗ Failed to load from:', modulePath);
-        if (error instanceof Error) {
-          console.log('[mygram-client]   Error:', error.message);
-        }
-      }
     }
   }
 
   // If we reach here, all paths failed
-  if (isCI && isWindows) {
-    console.log('[mygram-client] ✗ Native module not found in any of the expected locations');
-  }
-
   return null;
 }
 
@@ -120,10 +89,9 @@ export function loadNativeModule(): unknown {
  */
 export function loadWithBindings(): unknown {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-    const bindings = require('bindings');
+    const bindings = esmRequire('bindings');
     return bindings('mygram_native');
-  } catch (error) {
+  } catch (_error) {
     return null;
   }
 }
@@ -146,18 +114,17 @@ export function tryLoadNative(): unknown {
 
   // Strategy 3: Try node-pre-gyp
   try {
-    const basePath = path.join(__dirname, '..');
+    const basePath = path.join(currentDirname, '..');
     const packageJson = JSON.parse(fs.readFileSync(path.join(basePath, 'package.json'), 'utf8'));
 
     if (packageJson.binary) {
-      const bindingPath = require('@mapbox/node-pre-gyp').find(path.join(basePath, 'package.json'));
-      // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-      nativeModule = require(bindingPath);
+      const bindingPath = esmRequire('@mapbox/node-pre-gyp').find(path.join(basePath, 'package.json'));
+      nativeModule = esmRequire(bindingPath);
       if (nativeModule) {
         return nativeModule;
       }
     }
-  } catch (error) {
+  } catch (_error) {
     // node-pre-gyp failed
   }
 

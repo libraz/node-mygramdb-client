@@ -1,27 +1,41 @@
 # mygramdb-client
 
-[![npm version](https://img.shields.io/npm/v/mygramdb-client.svg)](https://www.npmjs.com/package/mygramdb-client)
-[![CI](https://github.com/libraz/node-mygramdb-client/actions/workflows/ci.yml/badge.svg)](https://github.com/libraz/node-mygramdb-client/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://img.shields.io/github/actions/workflow/status/libraz/node-mygramdb-client/ci.yml?branch=main&label=CI)](https://github.com/libraz/node-mygramdb-client/actions)
+[![npm](https://img.shields.io/npm/v/mygramdb-client)](https://www.npmjs.com/package/mygramdb-client)
+[![codecov](https://codecov.io/gh/libraz/node-mygramdb-client/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/node-mygramdb-client)
+[![License](https://img.shields.io/github/license/libraz/node-mygramdb-client)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
 
-Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) - A high-performance in-memory full-text search engine that is **25-200x faster** than MySQL FULLTEXT with MySQL replication support.
+Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine with MySQL replication support.
 
-## Features
+## Overview
 
-- **Dual Implementation** - Optional C++ native bindings with automatic JavaScript fallback
-- **Full Protocol Support** - All MygramDB commands (SEARCH, COUNT, GET, INFO, etc.)
-- **Search Expression Parser** - Web-style search syntax (+required, -excluded, "phrase", OR, grouping)
-- **Type Safety** - Full TypeScript definitions
-- **Promise-based API** - Modern async/await interface
-- **Connection Pooling Ready** - Designed for easy integration with connection pools
-- **Debug Mode** - Built-in support for query performance metrics
+MygramDB provides **25-200x faster** full-text search than MySQL FULLTEXT. This client supports both a pure JavaScript implementation and optional C++ native bindings for maximum performance.
+
+| | MySQL FULLTEXT | MygramDB |
+|---|---|---|
+| **Search Speed** | Baseline | 25-200x faster |
+| **Storage** | On-disk | In-memory |
+| **Replication** | — | MySQL binlog |
+| **Protocol** | MySQL | TCP (memcached-style) |
+
+### Features
+
+- **Dual Implementation** — Optional C++ native bindings with automatic JavaScript fallback
+- **Search Expression Parser** — Web-style search syntax (+required, -excluded, "phrase", OR, grouping)
+- **Full Protocol Support** — All MygramDB commands (SEARCH, COUNT, GET, INFO, etc.)
+- **Type Safety** — Full TypeScript definitions
+- **Promise-based API** — Modern async/await interface
 
 ## Installation
 
 ```bash
 npm install mygramdb-client
-# or
+```
+
+Or use yarn/pnpm:
+```bash
 yarn add mygramdb-client
+pnpm add mygramdb-client
 ```
 
 ## Quick Start
@@ -29,7 +43,6 @@ yarn add mygramdb-client
 ```typescript
 import { createMygramClient, simplifySearchExpression } from 'mygramdb-client';
 
-// Creates native C++ client if available, otherwise pure JavaScript
 const client = createMygramClient({
   host: 'localhost',
   port: 11016
@@ -37,24 +50,11 @@ const client = createMygramClient({
 
 await client.connect();
 
-// Parse web-style search expression (space = AND, - = NOT)
-const expr = simplifySearchExpression('hello world -spam');
-// expr = { mainTerm: 'hello', andTerms: ['world'], notTerms: ['spam'] }
-
-// Search with AND/NOT terms
-const results = await client.search('articles', expr.mainTerm, {
-  andTerms: expr.andTerms,
-  notTerms: expr.notTerms,
-  limit: 100,
-  offset: 50,  // MySQL-compatible: LIMIT 50,100
-  filters: { status: 'published', lang: 'en' },
-  sortColumn: 'created_at',
-  sortDesc: true
-});
-
+// Search
+const results = await client.search('articles', 'hello');
 console.log(`Found ${results.totalCount} results`);
 
-// Count matching documents
+// Count
 const count = await client.count('articles', 'technology');
 
 // Get document by ID
@@ -63,16 +63,31 @@ const doc = await client.get('articles', '12345');
 client.disconnect();
 ```
 
-## Documentation
+## Search Expressions
 
-- **[Getting Started](docs/en/getting-started.md)** - Installation, configuration, and basic usage
-- **[API Reference](docs/en/api-reference.md)** - Complete API documentation
-- **[Search Expression](docs/en/search-expression.md)** - Advanced search syntax guide
-- **[Advanced Usage](docs/en/advanced-usage.md)** - Connection pooling, error handling, and best practices
+Parse web-style search queries into structured search parameters:
 
-## TypeScript Support
+```typescript
+import { simplifySearchExpression } from 'mygramdb-client';
 
-The library is written in TypeScript and provides full type definitions:
+// Space = AND, - = NOT, "" = phrase, OR = OR, () = grouping
+const expr = simplifySearchExpression('hello world -spam');
+// → { mainTerm: 'hello', andTerms: ['world'], notTerms: ['spam'] }
+
+const results = await client.search('articles', expr.mainTerm, {
+  andTerms: expr.andTerms,
+  notTerms: expr.notTerms,
+  limit: 100,
+  offset: 50,
+  filters: { status: 'published', lang: 'en' },
+  sortColumn: 'created_at',
+  sortDesc: true
+});
+```
+
+## TypeScript
+
+Full type definitions are included:
 
 ```typescript
 import type {
@@ -87,36 +102,14 @@ import type {
 
 ## Development
 
-Development guidelines are documented within this repository.
-
 ```bash
-# Install dependencies
-yarn install
-
-# Run tests
-yarn test
-
-# Build library
-yarn build
-
-# Lint and format
-yarn lint
-yarn format
+yarn install      # Install dependencies
+yarn build        # Build library
+yarn test         # Run tests
+yarn lint         # Lint and format check
+yarn lint:fix     # Auto-fix lint + format issues
 ```
 
 ## License
 
-MIT
-
-## Author
-
-libraz <libraz@libraz.net>
-
-## Links
-
-- [MygramDB](https://github.com/libraz/mygram-db/) - The MygramDB server
-- [npm package](https://www.npmjs.com/package/mygramdb-client)
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+[MIT](LICENSE)

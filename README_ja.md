@@ -1,27 +1,41 @@
 # mygramdb-client
 
-[![npm version](https://img.shields.io/npm/v/mygramdb-client.svg)](https://www.npmjs.com/package/mygramdb-client)
-[![CI](https://github.com/libraz/node-mygramdb-client/actions/workflows/ci.yml/badge.svg)](https://github.com/libraz/node-mygramdb-client/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://img.shields.io/github/actions/workflow/status/libraz/node-mygramdb-client/ci.yml?branch=main&label=CI)](https://github.com/libraz/node-mygramdb-client/actions)
+[![npm](https://img.shields.io/npm/v/mygramdb-client)](https://www.npmjs.com/package/mygramdb-client)
+[![codecov](https://codecov.io/gh/libraz/node-mygramdb-client/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/node-mygramdb-client)
+[![License](https://img.shields.io/github/license/libraz/node-mygramdb-client)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
 
-[MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリ - MySQL FULLTEXT の **25〜200倍高速** な高性能インメモリ全文検索エンジンで、MySQL レプリケーションをサポートしています。
+[MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリ — MySQL レプリケーション対応の高性能インメモリ全文検索エンジン。
 
-## 特徴
+## 概要
 
-- **デュアル実装** - オプションのC++ネイティブバインディング（JavaScript自動フォールバック）
-- **完全なプロトコルサポート** - すべての MygramDB コマンド（SEARCH、COUNT、GET、INFO など）
-- **検索式パーサー** - Web スタイルの検索構文（+必須、-除外、"フレーズ"、OR、グループ化）
-- **型安全性** - 完全な TypeScript 型定義
-- **Promise ベース API** - モダンな async/await インターフェース
-- **コネクションプーリング対応** - コネクションプールとの統合が容易
-- **デバッグモード** - クエリパフォーマンスメトリクスの組み込みサポート
+MygramDB は MySQL FULLTEXT より **25〜200倍高速** な全文検索を提供します。本クライアントは純粋な JavaScript 実装に加え、オプションの C++ ネイティブバインディングもサポートしています。
+
+| | MySQL FULLTEXT | MygramDB |
+|---|---|---|
+| **検索速度** | ベースライン | 25〜200倍高速 |
+| **ストレージ** | ディスク | インメモリ |
+| **レプリケーション** | — | MySQL binlog |
+| **プロトコル** | MySQL | TCP (memcached 形式) |
+
+### 特徴
+
+- **デュアル実装** — オプションの C++ ネイティブバインディング（JavaScript 自動フォールバック）
+- **検索式パーサー** — Web スタイルの検索構文（+必須、-除外、"フレーズ"、OR、グループ化）
+- **完全なプロトコルサポート** — すべての MygramDB コマンド（SEARCH、COUNT、GET、INFO など）
+- **型安全性** — 完全な TypeScript 型定義
+- **Promise ベース API** — モダンな async/await インターフェース
 
 ## インストール
 
 ```bash
 npm install mygramdb-client
-# または
+```
+
+yarn/pnpm の場合:
+```bash
 yarn add mygramdb-client
+pnpm add mygramdb-client
 ```
 
 ## クイックスタート
@@ -29,7 +43,6 @@ yarn add mygramdb-client
 ```typescript
 import { createMygramClient, simplifySearchExpression } from 'mygramdb-client';
 
-// ネイティブC++クライアントが利用可能なら使用、なければ純粋なJavaScript
 const client = createMygramClient({
   host: 'localhost',
   port: 11016
@@ -37,24 +50,11 @@ const client = createMygramClient({
 
 await client.connect();
 
-// Web スタイルの検索式をパース（スペース = AND、- = NOT）
-const expr = simplifySearchExpression('hello world -spam');
-// expr = { mainTerm: 'hello', andTerms: ['world'], notTerms: ['spam'] }
+// 検索
+const results = await client.search('articles', 'hello');
+console.log(`${results.totalCount} 件の結果`);
 
-// AND/NOT 条件で検索
-const results = await client.search('articles', expr.mainTerm, {
-  andTerms: expr.andTerms,
-  notTerms: expr.notTerms,
-  limit: 100,
-  offset: 50,  // MySQL互換: LIMIT 50,100
-  filters: { status: 'published', lang: 'ja' },
-  sortColumn: 'created_at',
-  sortDesc: true
-});
-
-console.log(`${results.totalCount} 件の結果が見つかりました`);
-
-// マッチするドキュメントをカウント
+// カウント
 const count = await client.count('articles', 'technology');
 
 // ID でドキュメントを取得
@@ -63,16 +63,31 @@ const doc = await client.get('articles', '12345');
 client.disconnect();
 ```
 
-## ドキュメント
+## 検索式
 
-- **[はじめに](docs/ja/getting-started.md)** - インストール、設定、基本的な使い方
-- **[API リファレンス](docs/ja/api-reference.md)** - 完全な API ドキュメント
-- **[検索式](docs/ja/search-expression.md)** - 高度な検索構文ガイド
-- **[高度な使い方](docs/ja/advanced-usage.md)** - コネクションプーリング、エラーハンドリング、ベストプラクティス
+Web スタイルの検索クエリを構造化された検索パラメータにパースします:
 
-## TypeScript サポート
+```typescript
+import { simplifySearchExpression } from 'mygramdb-client';
 
-このライブラリは TypeScript で書かれており、完全な型定義を提供します：
+// スペース = AND、- = NOT、"" = フレーズ、OR = OR、() = グループ化
+const expr = simplifySearchExpression('hello world -spam');
+// → { mainTerm: 'hello', andTerms: ['world'], notTerms: ['spam'] }
+
+const results = await client.search('articles', expr.mainTerm, {
+  andTerms: expr.andTerms,
+  notTerms: expr.notTerms,
+  limit: 100,
+  offset: 50,
+  filters: { status: 'published', lang: 'ja' },
+  sortColumn: 'created_at',
+  sortDesc: true
+});
+```
+
+## TypeScript
+
+完全な型定義を同梱しています:
 
 ```typescript
 import type {
@@ -87,36 +102,14 @@ import type {
 
 ## 開発
 
-開発ガイドラインはこのリポジトリ内で確認できます。
-
 ```bash
-# 依存関係をインストール
-yarn install
-
-# テストを実行
-yarn test
-
-# ライブラリをビルド
-yarn build
-
-# リントとフォーマット
-yarn lint
-yarn format
+yarn install      # 依存関係をインストール
+yarn build        # ライブラリをビルド
+yarn test         # テストを実行
+yarn lint         # リント・フォーマットチェック
+yarn lint:fix     # リント・フォーマットを自動修正
 ```
 
 ## ライセンス
 
-MIT
-
-## 作者
-
-libraz <libraz@libraz.net>
-
-## リンク
-
-- [MygramDB](https://github.com/libraz/mygram-db/) - MygramDB サーバー
-- [npm package](https://www.npmjs.com/package/mygramdb-client)
-
-## コントリビューション
-
-コントリビューションを歓迎します！お気軽に Pull Request を送信してください。
+[MIT](LICENSE)

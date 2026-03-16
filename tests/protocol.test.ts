@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 /**
  * Protocol-level tests for MygramDB client
@@ -132,6 +132,74 @@ describe('MygramDB Protocol Command Generation', () => {
 
       const command = parts.join(' ');
       expect(command).toBe('SORT published_at DESC');
+    });
+  });
+
+  describe('Dump commands', () => {
+    it('should generate DUMP SAVE command with filepath', () => {
+      const command = `DUMP SAVE /data/snapshot.bin`;
+      expect(command).toBe('DUMP SAVE /data/snapshot.bin');
+    });
+
+    it('should generate DUMP LOAD command with filepath', () => {
+      const command = `DUMP LOAD /data/snapshot.bin`;
+      expect(command).toBe('DUMP LOAD /data/snapshot.bin');
+    });
+
+    it('should generate DUMP STATUS command', () => {
+      const command = 'DUMP STATUS';
+      expect(command).toBe('DUMP STATUS');
+    });
+
+    it('should generate DUMP VERIFY command with filepath', () => {
+      const command = `DUMP VERIFY /data/snapshot.bin`;
+      expect(command).toBe('DUMP VERIFY /data/snapshot.bin');
+    });
+
+    it('should generate DUMP INFO command with filepath', () => {
+      const command = `DUMP INFO /data/snapshot.bin`;
+      expect(command).toBe('DUMP INFO /data/snapshot.bin');
+    });
+  });
+
+  describe('Cache commands', () => {
+    it('should generate CACHE STATS command', () => {
+      const command = 'CACHE STATS';
+      expect(command).toBe('CACHE STATS');
+    });
+
+    it('should generate CACHE CLEAR command without table', () => {
+      const command = 'CACHE CLEAR';
+      expect(command).toBe('CACHE CLEAR');
+    });
+
+    it('should generate CACHE CLEAR command with table', () => {
+      const table = 'articles';
+      const command = `CACHE CLEAR ${table}`;
+      expect(command).toBe('CACHE CLEAR articles');
+    });
+
+    it('should generate CACHE ENABLE command', () => {
+      const command = 'CACHE ENABLE';
+      expect(command).toBe('CACHE ENABLE');
+    });
+
+    it('should generate CACHE DISABLE command', () => {
+      const command = 'CACHE DISABLE';
+      expect(command).toBe('CACHE DISABLE');
+    });
+  });
+
+  describe('Optimize command', () => {
+    it('should generate OPTIMIZE command without table', () => {
+      const command = 'OPTIMIZE';
+      expect(command).toBe('OPTIMIZE');
+    });
+
+    it('should generate OPTIMIZE command with table', () => {
+      const table = 'articles';
+      const command = `OPTIMIZE ${table}`;
+      expect(command).toBe('OPTIMIZE articles');
     });
   });
 

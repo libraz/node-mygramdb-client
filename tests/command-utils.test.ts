@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  ensureSafeCommandValue,
+  calculateQueryExpressionLength,
   ensureQueryLengthWithinLimit,
-  calculateQueryExpressionLength
+  ensureSafeCommandValue
 } from '../src/command-utils';
 import { InputValidationError } from '../src/errors';
 
@@ -57,12 +57,7 @@ describe('command utils', () => {
         payload.filters,
         payload.sortColumn
       );
-      expect(() =>
-        ensureQueryLengthWithinLimit(
-          payload,
-          limit
-        )
-      ).not.toThrow();
+      expect(() => ensureQueryLengthWithinLimit(payload, limit)).not.toThrow();
     });
 
     it('should throw when expression exceeds limit', () => {

@@ -34,6 +34,11 @@ export interface SearchExpression {
   rawExpression: string;
 }
 
+// ESM-compatible require for loading native .node bindings
+import { createRequire } from 'node:module';
+
+const nativeRequire = createRequire(import.meta.url);
+
 /**
  * Token types for expression parsing
  */
@@ -64,7 +69,7 @@ class Tokenizer {
 
   constructor(input: string) {
     // Normalize full-width spaces to half-width (U+3000)
-    // eslint-disable-next-line no-irregular-whitespace
+
     this.input = input.replace(/　/g, ' ');
     this.position = 0;
     this.tokens = [];
@@ -367,8 +372,7 @@ export function parseSearchExpressionNative(expression: string): {
 } {
   try {
     // Try to load native binding
-    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-    const binding: unknown = require('../build/Release/mygram_native.node');
+    const binding: unknown = nativeRequire('../build/Release/mygram_native.node');
     if (isNativeBinding(binding)) {
       return binding.parseSearchExpression(expression);
     }
