@@ -49,6 +49,8 @@
     "install": "node-pre-gyp install --fallback-to-build || node-gyp rebuild || echo 'Native build optional, using pure JavaScript fallback'",
     "prepare": "yarn build || echo 'Build failed, but package still usable with pure JS'",
     "prepublishOnly": "yarn clean && yarn lint && yarn test run && yarn build",
+    "prepack": "cp README.md .readme-backup && cp README.npm.md README.md",
+    "postpack": "mv .readme-backup README.md",
     "postinstall": "simple-git-hooks || true"
   },
   "keywords": [

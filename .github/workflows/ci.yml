@@ -3,60 +3,43 @@ name: CI
 on:
   push:
     branches: [main]
-    tags-ignore:
-      - 'v*.*.*'
-    paths:
-      - 'src/**'
-      - 'native/**'
-      - 'tests/**'
-      - 'package.json'
-      - 'yarn.lock'
-      - 'tsconfig.json'
-      - 'vite.config.ts'
-      - 'vitest*.config.ts'
-      - 'binding.gyp'
-      - '.github/workflows/ci.yml'
+    tags-ignore: ['**']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'native/**'
-      - 'tests/**'
-      - 'package.json'
-      - 'yarn.lock'
-      - 'tsconfig.json'
-      - 'vite.config.ts'
-      - 'vitest*.config.ts'
-      - 'binding.gyp'
-      - '.github/workflows/ci.yml'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: corepack enable
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-      - run: corepack enable
-      - run: corepack prepare yarn@4.9.1 --activate
+          node-version: 22
+          cache: yarn
       - run: yarn install --immutable
       - run: yarn lint
 
-  test:
-    needs: lint
+  build-and-test:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: [22.x]
     steps:
       - uses: actions/checkout@v4
+      - run: corepack enable
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-      - run: corepack enable
-      - run: corepack prepare yarn@4.9.1 --activate
+          node-version: 22
+          cache: yarn
       - run: yarn install --immutable
       - run: yarn build --verbose
       - run: yarn type-check
