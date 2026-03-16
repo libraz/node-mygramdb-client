@@ -17,6 +17,7 @@ examples/
 .eslintrc.cjs
 .prettierrc
 .ncurc.js
+biome.json
 
 # Yarn
 .yarnrc.yml
@@ -33,9 +34,17 @@ coverage/
 # CI/CD
 .github/
 
+# Docs (non-English)
+README_ja.md
+docs/
+
 # Misc
 .DS_Store
 *.log
+
+# npm README swap files
+README.npm.md
+.readme-backup
 
 # AI assistant artifacts
 CLAUDE.md
