@@ -10,7 +10,10 @@ import {
   ensureQueryLengthWithinLimit,
   ensureSafeCommandValue,
   ensureSafeFilters,
-  ensureSafeStringArray
+  ensureSafeStringArray,
+  validateFacetColumn,
+  validateFuzzy,
+  validateHighlight
 } from './command-utils.js';
 import { ConnectionError, ProtocolError } from './errors.js';
 import type {
@@ -19,9 +22,13 @@ import type {
   CountResponse,
   DebugInfo,
   Document,
+  FacetOptions,
+  FacetResponse,
+  FacetValue,
   ReplicationStatus,
   SearchOptions,
   SearchResponse,
+  SearchResult,
   ServerInfo
 } from './types.js';
 
@@ -163,7 +170,9 @@ export class NativeMygramClient {
       notTerms = [],
       filters = {},
       sortColumn = '',
-      sortDesc = true
+      sortDesc = true,
+      fuzzy = 0,
+      highlight
     } = options;
 
     const safeTable = ensureSafeCommandValue(table, 'table');
@@ -172,6 +181,8 @@ export class NativeMygramClient {
     ensureSafeStringArray(notTerms, 'notTerms');
     const safeFilters = ensureSafeFilters(filters);
     const safeSortColumn = sortColumn ? ensureSafeCommandValue(sortColumn, 'sortColumn') : '';
+    validateFuzzy(fuzzy);
+    validateHighlight(highlight);
 
     ensureQueryLengthWithinLimit(
       {
@@ -206,9 +217,30 @@ export class NativeMygramClient {
       parts.push('FILTER', key, '=', value);
     });
 
-    // Add sort
+    // Add sort (use _score for BM25 in MygramDB v1.6+)
     if (safeSortColumn) {
       parts.push('SORT', safeSortColumn, sortDesc ? 'DESC' : 'ASC');
+    }
+
+    // Add fuzzy (MygramDB v1.6+)
+    if (fuzzy > 0) {
+      parts.push('FUZZY', `${fuzzy}`);
+    }
+
+    // Add highlight (MygramDB v1.6+)
+    if (highlight) {
+      parts.push('HIGHLIGHT');
+      const openTag = highlight.openTag ?? '';
+      const closeTag = highlight.closeTag ?? '';
+      if (openTag !== '' && closeTag !== '') {
+        parts.push('TAG', openTag, closeTag);
+      }
+      if (highlight.snippetLen && highlight.snippetLen > 0) {
+        parts.push('SNIPPET_LEN', `${highlight.snippetLen}`);
+      }
+      if (highlight.maxFragments && highlight.maxFragments > 0) {
+        parts.push('MAX_FRAGMENTS', `${highlight.maxFragments}`);
+      }
     }
 
     // Add limit and offset
@@ -220,6 +252,61 @@ export class NativeMygramClient {
 
     const response = await this.sendCommand(parts.join(' '));
     return NativeMygramClient.parseSearchResponse(response);
+  }
+
+  /**
+   * Aggregate distinct filter-column values with document counts (MygramDB v1.6+).
+   *
+   * @param {string} table - Table name
+   * @param {string} column - Filter column to aggregate
+   * @param {FacetOptions} [options={}] - Optional query, refinements and limit
+   * @returns {Promise<FacetResponse>} Facet values with document counts
+   */
+  async facet(table: string, column: string, options: FacetOptions = {}): Promise<FacetResponse> {
+    const { query = '', andTerms = [], notTerms = [], filters = {}, limit = 0 } = options;
+
+    const safeTable = ensureSafeCommandValue(table, 'table');
+    validateFacetColumn(column);
+    const safeQuery = query ? ensureSafeCommandValue(query, 'query') : '';
+    ensureSafeStringArray(andTerms, 'andTerms');
+    ensureSafeStringArray(notTerms, 'notTerms');
+    const safeFilters = ensureSafeFilters(filters);
+    ensureQueryLengthWithinLimit(
+      {
+        query: safeQuery,
+        andTerms,
+        notTerms,
+        filters: safeFilters,
+        sortColumn: ''
+      },
+      this.config.maxQueryLength
+    );
+
+    const parts: string[] = ['FACET', safeTable, column];
+
+    if (safeQuery !== '') {
+      parts.push('QUERY', safeQuery);
+      if (andTerms.length > 0) {
+        andTerms.forEach((term) => {
+          parts.push('AND', term);
+        });
+      }
+      if (notTerms.length > 0) {
+        notTerms.forEach((term) => {
+          parts.push('NOT', term);
+        });
+      }
+      Object.entries(safeFilters).forEach(([key, value]) => {
+        parts.push('FILTER', key, '=', value);
+      });
+    }
+
+    if (limit > 0) {
+      parts.push('LIMIT', `${limit}`);
+    }
+
+    const response = await this.sendCommand(parts.join(' '));
+    return NativeMygramClient.parseFacetResponse(response);
   }
 
   /**
@@ -407,19 +494,77 @@ export class NativeMygramClient {
       throw new ProtocolError(`Invalid SEARCH response: ${firstLine}`);
     }
 
-    const parts = firstLine.split(' ');
-    const totalCount = parseInt(parts[2], 10);
-    const ids = parts.slice(3);
+    const headerParts = firstLine.split(' ');
+    const totalCount = parseInt(headerParts[2], 10);
 
-    const results = ids.map((id) => ({ primaryKey: id }));
+    const payloadLines: string[] = [];
+    let debugIndex = -1;
+    for (let i = 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line === '# DEBUG') {
+        debugIndex = i;
+        break;
+      }
+      if (line === '') continue;
+      payloadLines.push(line);
+    }
+
+    let results: SearchResult[];
+    if (payloadLines.length > 0) {
+      results = payloadLines.map((line) => {
+        const tab = line.indexOf('\t');
+        if (tab < 0) return { primaryKey: line, snippet: '' };
+        return { primaryKey: line.slice(0, tab), snippet: line.slice(tab + 1) };
+      });
+    } else {
+      const ids = headerParts.slice(3);
+      results = ids.map((id) => ({ primaryKey: id }));
+    }
 
     let debug: DebugInfo | undefined;
-    const debugIndex = lines.indexOf('# DEBUG');
     if (debugIndex !== -1) {
       debug = NativeMygramClient.parseDebugInfo(lines.slice(debugIndex + 1));
     }
 
     return { results, totalCount, debug };
+  }
+
+  /**
+   * Parse FACET response (MygramDB v1.6+).
+   */
+  private static parseFacetResponse(response: string): FacetResponse {
+    const lines = response.split('\n');
+    const firstLine = lines[0];
+
+    if (!firstLine.startsWith('OK FACET')) {
+      throw new ProtocolError(`Invalid FACET response: ${firstLine}`);
+    }
+    const headerParts = firstLine.split(' ');
+    if (headerParts.length < 3) {
+      throw new ProtocolError('Invalid FACET response: missing count');
+    }
+    if (Number.isNaN(parseInt(headerParts[2], 10))) {
+      throw new ProtocolError(`Invalid FACET count: ${headerParts[2]}`);
+    }
+
+    const results: FacetValue[] = [];
+    for (let i = 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line === '' || line.startsWith('#')) continue;
+      const tab = line.indexOf('\t');
+      if (tab < 0) {
+        throw new ProtocolError(`Invalid FACET row: ${line}`);
+      }
+      const value = line.slice(0, tab);
+      const countStr = line.slice(tab + 1).trim();
+      const count = parseInt(countStr, 10);
+      if (Number.isNaN(count)) {
+        throw new ProtocolError(`Invalid FACET count for ${value}: ${countStr}`);
+      }
+      results.push({ value, count });
+    }
+
+    return { results };
   }
 
   private static parseCountResponse(response: string): CountResponse {

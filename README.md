@@ -7,6 +7,8 @@
 
 Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine with MySQL replication support.
 
+Compatible with MygramDB v1.6 (BM25 scoring, HIGHLIGHT, FUZZY, FACET).
+
 ## Overview
 
 MygramDB provides **25-200x faster** full-text search than MySQL FULLTEXT. This client supports both a pure JavaScript implementation and optional C++ native bindings for maximum performance.
@@ -83,6 +85,75 @@ const results = await client.search('articles', expr.mainTerm, {
   sortColumn: 'created_at',
   sortDesc: true
 });
+```
+
+## MygramDB v1.6 Features
+
+### BM25 Relevance Scoring
+
+Sort by relevance using the special `_score` sort column (requires
+`verify_text: ascii|all` on the server):
+
+```typescript
+const results = await client.search('articles', 'machine learning', {
+  sortColumn: '_score',
+  sortDesc: true,
+  limit: 10
+});
+```
+
+### Fuzzy Search (Levenshtein)
+
+```typescript
+// Allow up to 1 edit (default) or 2 edits.
+const results = await client.search('articles', 'machne', {
+  fuzzy: 1,
+  limit: 10
+});
+```
+
+### Highlighting
+
+```typescript
+const results = await client.search('articles', 'golang', {
+  highlight: {
+    openTag: '<strong>',
+    closeTag: '</strong>',
+    snippetLen: 200,
+    maxFragments: 3
+  },
+  sortColumn: '_score',
+  sortDesc: true,
+  limit: 10
+});
+
+for (const r of results.results) {
+  console.log(r.primaryKey, r.snippet);
+}
+```
+
+Pass an empty `{}` to enable highlighting with server defaults
+(`<em>`/`</em>`, 100 code points, up to 3 fragments).
+
+### Facets
+
+Aggregate distinct filter-column values with document counts. Optionally
+scope the aggregation to a search result set:
+
+```typescript
+// All distinct statuses:
+const all = await client.facet('articles', 'status');
+
+// Top categories among documents matching "machine learning":
+const top = await client.facet('articles', 'category', {
+  query: 'machine learning',
+  filters: { status: '1' },
+  limit: 10
+});
+
+for (const v of top.results) {
+  console.log(`${v.value}: ${v.count}`);
+}
 ```
 
 ## TypeScript

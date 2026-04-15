@@ -7,6 +7,8 @@
 
 [MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリ — MySQL レプリケーション対応の高性能インメモリ全文検索エンジン。
 
+MygramDB v1.6 互換（BM25 スコアリング、HIGHLIGHT、FUZZY、FACET 対応）。
+
 ## 概要
 
 MygramDB は MySQL FULLTEXT より **25〜200倍高速** な全文検索を提供します。本クライアントは純粋な JavaScript 実装に加え、オプションの C++ ネイティブバインディングもサポートしています。
@@ -83,6 +85,74 @@ const results = await client.search('articles', expr.mainTerm, {
   sortColumn: 'created_at',
   sortDesc: true
 });
+```
+
+## MygramDB v1.6 の機能
+
+### BM25 関連度スコアリング
+
+特殊なソートカラム名 `_score` を指定すると関連度順でソートできます
+（サーバー側で `verify_text: ascii|all` の設定が必要）:
+
+```typescript
+const results = await client.search('articles', 'machine learning', {
+  sortColumn: '_score',
+  sortDesc: true,
+  limit: 10
+});
+```
+
+### あいまい検索（Levenshtein）
+
+```typescript
+// 編集距離 1（デフォルト）または 2 を許容
+const results = await client.search('articles', 'machne', {
+  fuzzy: 1,
+  limit: 10
+});
+```
+
+### ハイライト
+
+```typescript
+const results = await client.search('articles', 'golang', {
+  highlight: {
+    openTag: '<strong>',
+    closeTag: '</strong>',
+    snippetLen: 200,
+    maxFragments: 3
+  },
+  sortColumn: '_score',
+  sortDesc: true,
+  limit: 10
+});
+
+for (const r of results.results) {
+  console.log(r.primaryKey, r.snippet);
+}
+```
+
+`{}` を渡すとサーバーのデフォルト設定（`<em>`/`</em>`、100 コードポイント、
+最大 3 フラグメント）でハイライトされます。
+
+### ファセット
+
+フィルタ列の値と件数を集計します。検索結果の範囲に絞り込むことも可能です:
+
+```typescript
+// テーブル全体での値分布:
+const all = await client.facet('articles', 'status');
+
+// "machine learning" にマッチするドキュメント内のカテゴリ上位:
+const top = await client.facet('articles', 'category', {
+  query: 'machine learning',
+  filters: { status: '1' },
+  limit: 10
+});
+
+for (const v of top.results) {
+  console.log(`${v.value}: ${v.count}`);
+}
 ```
 
 ## TypeScript

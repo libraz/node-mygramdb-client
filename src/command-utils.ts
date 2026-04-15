@@ -1,4 +1,5 @@
 import { InputValidationError } from './errors.js';
+import type { HighlightOptions } from './types.js';
 
 export const DEFAULT_MAX_QUERY_LENGTH = 128;
 
@@ -159,5 +160,82 @@ export function ensureQueryLengthWithinLimit(
     throw new InputValidationError(
       `Query expression length (${expressionLength}) exceeds maximum allowed length of ${maxLength} characters.`
     );
+  }
+}
+
+/**
+ * Validate a FUZZY edit distance. The server accepts 1 or 2; 0 disables the clause.
+ *
+ * @param {number} distance - Fuzzy edit distance
+ * @throws {InputValidationError} When the distance is outside 0..2
+ */
+export function validateFuzzy(distance: number): void {
+  if (distance === 0 || distance === 1 || distance === 2) {
+    return;
+  }
+  throw new InputValidationError(`Invalid fuzzy distance ${distance}: must be 0, 1, or 2`);
+}
+
+/**
+ * Validate HIGHLIGHT clause options.
+ *
+ * `openTag`/`closeTag` must both be empty or both be set, contain no
+ * control or whitespace characters, and `snippetLen`/`maxFragments` must
+ * fall within the documented ranges.
+ *
+ * @param {HighlightOptions | undefined} highlight - Highlight options to validate (no-op when undefined)
+ * @throws {InputValidationError} When options are invalid
+ */
+export function validateHighlight(highlight: HighlightOptions | undefined): void {
+  if (!highlight) return;
+
+  const openTag = highlight.openTag ?? '';
+  const closeTag = highlight.closeTag ?? '';
+  if ((openTag === '') !== (closeTag === '')) {
+    throw new InputValidationError('highlight openTag and closeTag must be set together');
+  }
+
+  for (const [name, value] of [
+    ['highlight.openTag', openTag],
+    ['highlight.closeTag', closeTag]
+  ] as const) {
+    if (value === '') continue;
+    ensureSafeCommandValue(value, name);
+    for (let i = 0; i < value.length; i += 1) {
+      const ch = value[i];
+      if (ch === ' ' || ch === '\t') {
+        throw new InputValidationError(`${name} must not contain whitespace: ${JSON.stringify(value)}`);
+      }
+    }
+  }
+
+  const snippetLen = highlight.snippetLen ?? 0;
+  if (snippetLen < 0 || snippetLen > 10000) {
+    throw new InputValidationError(`highlight.snippetLen out of range (0..10000): ${snippetLen}`);
+  }
+
+  const maxFragments = highlight.maxFragments ?? 0;
+  if (maxFragments < 0 || maxFragments > 100) {
+    throw new InputValidationError(`highlight.maxFragments out of range (0..100): ${maxFragments}`);
+  }
+}
+
+/**
+ * Validate a FACET column name. Same rules as table names: must be non-empty
+ * and contain no control or whitespace characters.
+ *
+ * @param {string} column - Column name
+ * @throws {InputValidationError} When the column name is invalid
+ */
+export function validateFacetColumn(column: string): void {
+  if (column === '') {
+    throw new InputValidationError('facet column must not be empty');
+  }
+  for (let i = 0; i < column.length; i += 1) {
+    const ch = column[i];
+    const code = ch.charCodeAt(0);
+    if ((code >= 0x00 && code <= 0x1f) || code === 0x7f || ch === ' ' || ch === '\t') {
+      throw new InputValidationError(`facet column contains invalid character: ${JSON.stringify(ch)}`);
+    }
   }
 }

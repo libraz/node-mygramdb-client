@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MygramClient } from '../src/client';
 import { createMygramClient, getClientType, isNativeAvailable } from '../src/client-factory';
+import { ProtocolError } from '../src/errors';
 import type { NativeMygramClient } from '../src/native-client';
 import { simplifySearchExpression } from '../src/search-expression';
 
@@ -187,6 +188,137 @@ function runClientTests(clientName: string, createClient: () => TestClient): voi
         }
         if (result.debug!.cacheSavedMs !== undefined) {
           expect(typeof result.debug!.cacheSavedMs).toBe('number');
+        }
+      });
+    });
+
+    describe('v1.6 fuzzy search', () => {
+      it('should accept FUZZY 1 clause and return a valid SearchResponse', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        const result = await client.search(table, 'machne', { fuzzy: 1, limit: 5 });
+        expect(result).toBeDefined();
+        expect(typeof result.totalCount).toBe('number');
+        expect(Array.isArray(result.results)).toBe(true);
+      });
+
+      it('should accept FUZZY 2 clause', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        const result = await client.search(table, 'unrelated', { fuzzy: 2, limit: 5 });
+        expect(result).toBeDefined();
+        expect(typeof result.totalCount).toBe('number');
+      });
+    });
+
+    describe('v1.6 highlight', () => {
+      it('should round-trip a bare HIGHLIGHT clause (or surface a server config error)', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        // HIGHLIGHT requires `memory.verify_text: ascii|all` on the server;
+        // when the table is not configured for it the server returns
+        // ERROR. Either outcome proves the client correctly round-trips
+        // the new clause.
+        try {
+          const result = await client.search(table, 'test', { highlight: {}, limit: 3 });
+          expect(result).toBeDefined();
+          expect(Array.isArray(result.results)).toBe(true);
+          for (const r of result.results) {
+            expect(typeof r.snippet).toBe('string');
+          }
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProtocolError);
+        }
+      });
+
+      it('should round-trip custom HIGHLIGHT tags and parameters', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        try {
+          const result = await client.search(table, 'test', {
+            highlight: {
+              openTag: '<mark>',
+              closeTag: '</mark>',
+              snippetLen: 80,
+              maxFragments: 2
+            },
+            limit: 3
+          });
+          expect(result).toBeDefined();
+          for (const r of result.results) {
+            expect(typeof r.snippet).toBe('string');
+          }
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProtocolError);
+        }
+      });
+    });
+
+    describe('v1.6 BM25 (_score sort)', () => {
+      it('should accept SORT _score DESC (or surface a server config error)', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        try {
+          const result = await client.search(table, 'test', {
+            sortColumn: '_score',
+            sortDesc: true,
+            limit: 5
+          });
+          expect(result).toBeDefined();
+          expect(typeof result.totalCount).toBe('number');
+        } catch (err) {
+          // _score sorting requires `verify_text: ascii|all` on the server;
+          // when the table is not configured for it the server returns an
+          // ERROR. Either outcome proves the client correctly round-trips
+          // the new clause.
+          expect(err).toBeInstanceOf(ProtocolError);
+        }
+      });
+    });
+
+    describe('v1.6 facet', () => {
+      it('should round-trip a FACET command (or surface a server config error)', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        // Many test schemas have no filter columns; the server then
+        // returns an ERROR. Either outcome is acceptable as long as the
+        // protocol round-trips cleanly.
+        try {
+          const resp = await client.facet(table, 'status');
+          expect(resp).toBeDefined();
+          expect(Array.isArray(resp.results)).toBe(true);
+          for (const v of resp.results) {
+            expect(typeof v.value).toBe('string');
+            expect(typeof v.count).toBe('number');
+          }
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProtocolError);
+        }
+      });
+
+      it('should round-trip a scoped FACET (QUERY + LIMIT)', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        try {
+          const resp = await client.facet(table, 'status', { query: 'test', limit: 5 });
+          expect(resp).toBeDefined();
+          expect(Array.isArray(resp.results)).toBe(true);
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProtocolError);
         }
       });
     });

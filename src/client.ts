@@ -8,7 +8,10 @@ import {
   ensureQueryLengthWithinLimit,
   ensureSafeCommandValue,
   ensureSafeFilters,
-  ensureSafeStringArray
+  ensureSafeStringArray,
+  validateFacetColumn,
+  validateFuzzy,
+  validateHighlight
 } from './command-utils.js';
 import { ConnectionError, ProtocolError, TimeoutError } from './errors.js';
 import type {
@@ -19,6 +22,9 @@ import type {
   DebugInfo,
   Document,
   DumpStatus,
+  FacetOptions,
+  FacetResponse,
+  FacetValue,
   ReplicationStatus,
   SearchOptions,
   SearchResponse,
@@ -177,7 +183,9 @@ export class MygramClient {
       notTerms = [],
       filters = {},
       sortColumn = '',
-      sortDesc = true
+      sortDesc = true,
+      fuzzy = 0,
+      highlight
     } = options;
 
     const safeTable = ensureSafeCommandValue(table, 'table');
@@ -186,6 +194,8 @@ export class MygramClient {
     ensureSafeStringArray(notTerms, 'notTerms');
     const safeFilters = ensureSafeFilters(filters);
     const safeSortColumn = sortColumn ? ensureSafeCommandValue(sortColumn, 'sortColumn') : '';
+    validateFuzzy(fuzzy);
+    validateHighlight(highlight);
 
     ensureQueryLengthWithinLimit(
       {
@@ -220,9 +230,30 @@ export class MygramClient {
       parts.push('FILTER', key, '=', value);
     });
 
-    // Add sort
+    // Add sort (use _score for BM25 in MygramDB v1.6+)
     if (safeSortColumn) {
       parts.push('SORT', safeSortColumn, sortDesc ? 'DESC' : 'ASC');
+    }
+
+    // Add fuzzy (MygramDB v1.6+)
+    if (fuzzy > 0) {
+      parts.push('FUZZY', `${fuzzy}`);
+    }
+
+    // Add highlight (MygramDB v1.6+)
+    if (highlight) {
+      parts.push('HIGHLIGHT');
+      const openTag = highlight.openTag ?? '';
+      const closeTag = highlight.closeTag ?? '';
+      if (openTag !== '' && closeTag !== '') {
+        parts.push('TAG', openTag, closeTag);
+      }
+      if (highlight.snippetLen && highlight.snippetLen > 0) {
+        parts.push('SNIPPET_LEN', `${highlight.snippetLen}`);
+      }
+      if (highlight.maxFragments && highlight.maxFragments > 0) {
+        parts.push('MAX_FRAGMENTS', `${highlight.maxFragments}`);
+      }
     }
 
     // Add limit and offset
@@ -573,6 +604,68 @@ export class MygramClient {
   }
 
   /**
+   * Aggregate distinct filter-column values with document counts (MygramDB v1.6+).
+   *
+   * When `options.query` is empty, FACET returns the distinct values
+   * across the entire table. When provided, the aggregation is scoped
+   * to documents matching the query (with optional AND/NOT/FILTER refinements).
+   *
+   * @param {string} table - Table name
+   * @param {string} column - Filter column to aggregate
+   * @param {FacetOptions} [options={}] - Optional query, refinements and limit
+   * @returns {Promise<FacetResponse>} Facet values with document counts
+   * @throws {ConnectionError} If not connected to server
+   * @throws {TimeoutError} If command times out
+   * @throws {ProtocolError} If server returns an error
+   */
+  async facet(table: string, column: string, options: FacetOptions = {}): Promise<FacetResponse> {
+    const { query = '', andTerms = [], notTerms = [], filters = {}, limit = 0 } = options;
+
+    const safeTable = ensureSafeCommandValue(table, 'table');
+    validateFacetColumn(column);
+    const safeQuery = query ? ensureSafeCommandValue(query, 'query') : '';
+    ensureSafeStringArray(andTerms, 'andTerms');
+    ensureSafeStringArray(notTerms, 'notTerms');
+    const safeFilters = ensureSafeFilters(filters);
+    ensureQueryLengthWithinLimit(
+      {
+        query: safeQuery,
+        andTerms,
+        notTerms,
+        filters: safeFilters,
+        sortColumn: ''
+      },
+      this.config.maxQueryLength
+    );
+
+    const parts: string[] = ['FACET', safeTable, column];
+
+    if (safeQuery !== '') {
+      parts.push('QUERY', safeQuery);
+      if (andTerms.length > 0) {
+        andTerms.forEach((term) => {
+          parts.push('AND', term);
+        });
+      }
+      if (notTerms.length > 0) {
+        notTerms.forEach((term) => {
+          parts.push('NOT', term);
+        });
+      }
+      Object.entries(safeFilters).forEach(([key, value]) => {
+        parts.push('FILTER', key, '=', value);
+      });
+    }
+
+    if (limit > 0) {
+      parts.push('LIMIT', `${limit}`);
+    }
+
+    const response = await this.sendCommand(parts.join(' '));
+    return MygramClient.parseFacetResponse(response);
+  }
+
+  /**
    * Send raw command to server
    *
    * This is a low-level interface for sending custom commands.
@@ -643,8 +736,18 @@ export class MygramClient {
       if (this.responseBuffer.includes('\nEND\n') || this.responseBuffer.endsWith('\nEND')) {
         this.completeResponse();
       }
+    } else if (this.responseBuffer.startsWith('OK FACET ') || this.responseBuffer.startsWith('OK FACET\r')) {
+      // FACET response (MygramDB v1.6+) - multi-line, terminated by blank line
+      if (this.isMultiLineResponseComplete()) {
+        this.completeResponse();
+      }
     } else if (this.responseBuffer.includes('# DEBUG')) {
       // Debug response - wait for empty line after debug section
+      if (this.isMultiLineResponseComplete()) {
+        this.completeResponse();
+      }
+    } else if (this.responseBuffer.startsWith('OK RESULTS ') && this.bufferHasHighlightRows()) {
+      // HIGHLIGHT response (MygramDB v1.6+) - multi-line; terminated by blank line
       if (this.isMultiLineResponseComplete()) {
         this.completeResponse();
       }
@@ -652,6 +755,18 @@ export class MygramClient {
       // Single-line response with newline
       this.completeResponse();
     }
+  }
+
+  /**
+   * Detect HIGHLIGHT-mode SEARCH responses by checking for tab-prefixed
+   * payload lines after the count line. Classic single-line responses
+   * never contain tabs.
+   */
+  private bufferHasHighlightRows(): boolean {
+    const firstLineEnd = this.responseBuffer.indexOf('\n');
+    if (firstLineEnd < 0) return false;
+    const rest = this.responseBuffer.slice(firstLineEnd + 1);
+    return rest.includes('\t');
   }
 
   /**
@@ -689,7 +804,22 @@ export class MygramClient {
   }
 
   /**
-   * Parse SEARCH response
+   * Parse SEARCH response.
+   *
+   * Two formats are supported:
+   *
+   * 1. Classic (single-line):
+   *    `OK RESULTS <total_count> <id1> <id2> ...`
+   *
+   * 2. HIGHLIGHT (multi-line, MygramDB v1.6+):
+   *    ```
+   *    OK RESULTS <total_count>
+   *    <id1>\t<snippet1>
+   *    <id2>\t<snippet2>
+   *    ...
+   *    ```
+   *
+   * Either format may be followed by a `# DEBUG` block.
    */
   private static parseSearchResponse(response: string): SearchResponse {
     const lines = response.split('\n');
@@ -699,20 +829,92 @@ export class MygramClient {
       throw new ProtocolError(`Invalid SEARCH response: ${firstLine}`);
     }
 
-    const parts = firstLine.split(' ');
-    const totalCount = parseInt(parts[2], 10);
-    const ids = parts.slice(3);
+    const headerParts = firstLine.split(' ');
+    const totalCount = parseInt(headerParts[2], 10);
 
-    const results: SearchResult[] = ids.map((id) => ({ primaryKey: id }));
+    // Collect payload lines that precede an optional # DEBUG block.
+    const payloadLines: string[] = [];
+    let debugIndex = -1;
+    for (let i = 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line === '# DEBUG') {
+        debugIndex = i;
+        break;
+      }
+      if (line === '') continue;
+      payloadLines.push(line);
+    }
 
-    // Parse debug info if present
+    let results: SearchResult[];
+    if (payloadLines.length > 0) {
+      // HIGHLIGHT mode: each payload line is "<pk>[\t<snippet>]".
+      results = payloadLines.map((line) => {
+        const tab = line.indexOf('\t');
+        if (tab < 0) {
+          return { primaryKey: line, snippet: '' };
+        }
+        return { primaryKey: line.slice(0, tab), snippet: line.slice(tab + 1) };
+      });
+    } else {
+      // Classic mode: PKs follow the count on the first line.
+      const ids = headerParts.slice(3);
+      results = ids.map((id) => ({ primaryKey: id }));
+    }
+
     let debug: DebugInfo | undefined;
-    const debugIndex = lines.indexOf('# DEBUG');
     if (debugIndex !== -1) {
       debug = MygramClient.parseDebugInfo(lines.slice(debugIndex + 1));
     }
 
     return { results, totalCount, debug };
+  }
+
+  /**
+   * Parse FACET response (MygramDB v1.6+).
+   *
+   * Format:
+   * ```
+   * OK FACET <num_values>
+   * <value1>\t<count1>
+   * <value2>\t<count2>
+   * ...
+   * ```
+   * Lines starting with `#` (debug/comment) are ignored.
+   */
+  private static parseFacetResponse(response: string): FacetResponse {
+    const lines = response.split('\n');
+    const firstLine = lines[0];
+
+    if (!firstLine.startsWith('OK FACET')) {
+      throw new ProtocolError(`Invalid FACET response: ${firstLine}`);
+    }
+
+    const headerParts = firstLine.split(' ');
+    if (headerParts.length < 3) {
+      throw new ProtocolError('Invalid FACET response: missing count');
+    }
+    if (Number.isNaN(parseInt(headerParts[2], 10))) {
+      throw new ProtocolError(`Invalid FACET count: ${headerParts[2]}`);
+    }
+
+    const results: FacetValue[] = [];
+    for (let i = 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line === '' || line.startsWith('#')) continue;
+      const tab = line.indexOf('\t');
+      if (tab < 0) {
+        throw new ProtocolError(`Invalid FACET row: ${line}`);
+      }
+      const value = line.slice(0, tab);
+      const countStr = line.slice(tab + 1).trim();
+      const count = parseInt(countStr, 10);
+      if (Number.isNaN(count)) {
+        throw new ProtocolError(`Invalid FACET count for ${value}: ${countStr}`);
+      }
+      results.push({ value, count });
+    }
+
+    return { results };
   }
 
   /**
