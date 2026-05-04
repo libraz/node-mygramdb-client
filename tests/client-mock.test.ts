@@ -20,14 +20,18 @@ vi.mock('node:net', async () => {
   };
 });
 
+function getInternalSocket(client: MygramClient): net.Socket {
+  return (client as unknown as { connection: { socket: net.Socket } }).connection.socket;
+}
+
 function createConnectedClient(config = {}): { client: MygramClient; socket: net.Socket } {
   const client = new MygramClient(config);
 
   // Start connection
   const connectPromise = client.connect();
 
-  // Get socket instance (created inside connect())
-  const socket = (client as unknown as { socket: net.Socket }).socket;
+  // Get socket instance (created inside Connection.connect())
+  const socket = getInternalSocket(client);
 
   // Emit connect event
   socket.emit('connect');
@@ -48,7 +52,7 @@ describe('MygramClient (mocked socket)', () => {
       const client = new MygramClient({ host: 'localhost', port: 11016 });
       const promise = client.connect();
 
-      const socket = (client as unknown as { socket: net.Socket }).socket;
+      const socket = getInternalSocket(client);
       expect(socket.setEncoding).toHaveBeenCalledWith('utf8');
       expect(socket.setTimeout).toHaveBeenCalledWith(5000);
 
@@ -63,7 +67,7 @@ describe('MygramClient (mocked socket)', () => {
       const client = new MygramClient({ socketPath: '/tmp/mygramdb.sock' });
       const promise = client.connect();
 
-      const socket = (client as unknown as { socket: net.Socket }).socket;
+      const socket = getInternalSocket(client);
       socket.emit('connect');
       await promise;
 
@@ -83,7 +87,7 @@ describe('MygramClient (mocked socket)', () => {
       const client = new MygramClient();
       const promise = client.connect();
 
-      const socket = (client as unknown as { socket: net.Socket }).socket;
+      const socket = getInternalSocket(client);
       socket.emit('error', new Error('ECONNREFUSED'));
 
       await expect(promise).rejects.toThrow(ConnectionError);
@@ -410,7 +414,7 @@ describe('MygramClient (mocked socket)', () => {
         'used_memory_bytes: 1048576',
         'total_documents: 500',
         'tables: articles, users',
-        '',
+        'END',
         ''
       ].join('\n');
 
@@ -432,7 +436,7 @@ describe('MygramClient (mocked socket)', () => {
 
       const promise = client.info();
 
-      const response = ['OK INFO', '# Server', 'version: 2.0.0', '', '# Stats', 'total_requests: 10', '', ''].join(
+      const response = ['OK INFO', '# Server', 'version: 2.0.0', '', '# Stats', 'total_requests: 10', 'END', ''].join(
         '\n'
       );
 
@@ -684,7 +688,7 @@ describe('MygramClient (mocked socket)', () => {
         'tables_processed: 2',
         'current_table: articles',
         'elapsed_seconds: 3.5',
-        '',
+        'END',
         ''
       ].join('\n');
 
@@ -705,7 +709,7 @@ describe('MygramClient (mocked socket)', () => {
 
       const promise = client.dumpStatus();
 
-      const response = ['OK DUMP_STATUS', 'status: failed', 'error: disk full', '', ''].join('\n');
+      const response = ['OK DUMP_STATUS', 'status: failed', 'error: disk full', 'END', ''].join('\n');
 
       socket.emit('data', response);
 
@@ -785,7 +789,7 @@ describe('MygramClient (mocked socket)', () => {
         'hit_rate: 96.15%',
         'evictions: 50',
         'ttl_seconds: 3600',
-        '',
+        'END',
         ''
       ].join('\n');
 
@@ -952,7 +956,7 @@ describe('MygramClient (mocked socket)', () => {
       await client.connect();
 
       const promise = client.info();
-      socket.emit('data', 'OK INFO\r\nversion: 1.0.0\r\n\r\n');
+      socket.emit('data', 'OK INFO\r\nversion: 1.0.0\r\nEND\r\n');
 
       const info = await promise;
       expect(info.version).toBe('1.0.0');

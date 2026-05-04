@@ -145,6 +145,21 @@ export interface ReplicationStatus {
   gtid: string;
   /** Raw status string */
   statusStr: string;
+  /**
+   * Number of replication events processed so far.
+   *
+   * Available in MygramDB v1.6+ multi-line REPLICATION STATUS responses.
+   * Undefined when the server omits the field (older protocol or
+   * single-line legacy format).
+   */
+  processedEvents?: number;
+  /**
+   * Current size of the replication queue (only present while running).
+   *
+   * Available in MygramDB v1.6+ multi-line REPLICATION STATUS responses
+   * when the binlog reader is running. Undefined otherwise.
+   */
+  queueSize?: number;
 }
 
 /**

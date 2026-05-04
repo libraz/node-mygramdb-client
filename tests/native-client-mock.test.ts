@@ -328,8 +328,7 @@ describe('NativeMygramClient', () => {
       expect(command).toContain('COUNT articles hello');
       expect(command).toContain('AND world');
       expect(command).toContain('NOT spam');
-      expect(command).toContain('FILTER');
-      expect(command).toContain('status=active');
+      expect(command).toContain('FILTER status = active');
     });
 
     it('should parse count with debug info', async () => {

@@ -56,6 +56,72 @@ export function ensureSafeCommandValue(value: string, fieldName: string): string
 }
 
 /**
+ * Ensure a value is usable as a single, unquoted identifier in the protocol.
+ *
+ * Identifiers (table names, primary keys, sort columns, filter keys,
+ * dump filepaths) are sent unquoted on the wire, so any embedded whitespace
+ * would split a single identifier into multiple tokens and break the
+ * command. This validator additionally rejects empty strings and the
+ * full set of control characters covered by {@link ensureSafeCommandValue}.
+ *
+ * @param {string} value - Identifier value to validate
+ * @param {string} fieldName - Field name for clearer error messages
+ * @returns {string} The original value when it is safe
+ * @throws {InputValidationError} When the value is empty or contains
+ *   whitespace/control characters
+ */
+export function ensureSafeIdentifier(value: string, fieldName: string): string {
+  if (value === '') {
+    throw new InputValidationError(`Input for ${fieldName} must not be empty`);
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (isControlCharacter(char)) {
+      const description = getControlCharDescription(char);
+      throw new InputValidationError(`Input for ${fieldName} contains ${description}, which is not allowed`);
+    }
+    if (char === ' ' || char === '\t') {
+      throw new InputValidationError(`Input for ${fieldName} must not contain whitespace`);
+    }
+  }
+  return value;
+}
+
+/**
+ * Validate every key in a filters record as an identifier and every value
+ * as a safe command token. Keys are sent unquoted (so cannot contain
+ * whitespace), but values may contain spaces.
+ *
+ * @param {Record<string, string>} filters - Filter map
+ * @returns {Record<string, string>} The original filters when safe
+ */
+export function ensureSafeFilterIdentifiers(filters: Record<string, string>): Record<string, string> {
+  Object.entries(filters).forEach(([key, value]) => {
+    ensureSafeIdentifier(key, `filters.${key}.key`);
+    ensureSafeCommandValue(value, `filters.${key}.value`);
+  });
+  return filters;
+}
+
+/**
+ * Escape a query string for transmission. Empty strings are surfaced as
+ * the explicit token `""` so the server receives a well-formed empty
+ * argument instead of a malformed command. Non-empty strings are passed
+ * through unchanged after the standard control-character validation.
+ *
+ * @param {string} value - Query string value
+ * @param {string} fieldName - Field name for clearer error messages
+ * @returns {string} Wire-safe representation of the query string
+ * @throws {InputValidationError} When the value contains control characters
+ */
+export function escapeQueryString(value: string, fieldName: string): string {
+  if (value === '') {
+    return '""';
+  }
+  return ensureSafeCommandValue(value, fieldName);
+}
+
+/**
  * Validates every entry of a string array.
  *
  * @param {string[]} values - Values to validate

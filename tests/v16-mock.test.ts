@@ -25,7 +25,7 @@ vi.mock('node:net', async () => {
 function createConnectedClient(config = {}): { client: MygramClient; socket: net.Socket } {
   const client = new MygramClient(config);
   const connectPromise = client.connect();
-  const socket = (client as unknown as { socket: net.Socket }).socket;
+  const socket = (client as unknown as { connection: { socket: net.Socket } }).connection.socket;
   socket.emit('connect');
   connectPromise.catch(() => {});
   return { client, socket };
