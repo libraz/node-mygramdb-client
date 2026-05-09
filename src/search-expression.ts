@@ -304,7 +304,13 @@ export function convertSearchExpression(expression: string): string {
  * Simplify search expression to basic terms (for backward compatibility)
  *
  * For clients that don't support QueryAST, this extracts simple term lists.
- * Complex expressions with OR/grouping will lose semantic meaning.
+ *
+ * Required terms (`+term`) take priority: the first becomes `mainTerm`, the
+ * rest plus any plain implicit-AND terms become `andTerms`. When no required
+ * terms are present but the expression contains an OR / parenthesized
+ * sub-expression (e.g. `python OR ruby`, `(a OR b)`), the raw expression is
+ * surfaced as a single parenthesized `mainTerm` so callers preserve OR
+ * semantics instead of silently AND-composing the parts.
  *
  * @param {string} expression - Web-style search expression
  * @returns {{ mainTerm: string, andTerms: string[], notTerms: string[] }} Simplified terms object
@@ -316,18 +322,39 @@ export function simplifySearchExpression(expression: string): {
   notTerms: string[];
 } {
   const expr = parseSearchExpression(expression);
-
-  const allPositiveTerms = [...expr.requiredTerms, ...expr.optionalTerms];
-
-  if (allPositiveTerms.length === 0) {
-    throw new Error('Search expression must have at least one positive term');
-  }
-
+  const simplified = simplifyParsedExpression(expr);
   return {
-    mainTerm: allPositiveTerms[0],
-    andTerms: allPositiveTerms.slice(1),
+    mainTerm: simplified.mainTerm,
+    andTerms: simplified.andTerms,
     notTerms: expr.excludedTerms
   };
+}
+
+/**
+ * Shared simplification logic used by `simplifySearchExpression` and the
+ * JavaScript fallback path of `parseSearchExpressionNative`. Mirrors the
+ * upstream C++ `SimplifySearchExpression`.
+ */
+function simplifyParsedExpression(expr: SearchExpression): {
+  mainTerm: string;
+  andTerms: string[];
+} {
+  if (expr.requiredTerms.length > 0) {
+    const allPositive = [...expr.requiredTerms, ...expr.optionalTerms];
+    return { mainTerm: allPositive[0], andTerms: allPositive.slice(1) };
+  }
+
+  if (expr.rawExpression.length > 0) {
+    const raw = expr.rawExpression;
+    const mainTerm = raw.startsWith('(') && raw.endsWith(')') ? raw : `(${raw})`;
+    return { mainTerm, andTerms: [] };
+  }
+
+  if (expr.optionalTerms.length > 0) {
+    return { mainTerm: expr.optionalTerms[0], andTerms: expr.optionalTerms.slice(1) };
+  }
+
+  throw new Error('Search expression must have at least one positive term');
 }
 
 /**
@@ -382,15 +409,11 @@ export function parseSearchExpressionNative(expression: string): {
 
   // Fallback to JavaScript implementation
   const expr = parseSearchExpression(expression);
-  const allPositiveTerms = [...expr.requiredTerms, ...expr.optionalTerms];
-
-  if (allPositiveTerms.length === 0) {
-    throw new Error('Search expression must have at least one positive term');
-  }
+  const simplified = simplifyParsedExpression(expr);
 
   return {
-    mainTerm: allPositiveTerms[0],
-    andTerms: allPositiveTerms.slice(1),
+    mainTerm: simplified.mainTerm,
+    andTerms: simplified.andTerms,
     notTerms: expr.excludedTerms,
     optionalTerms: expr.optionalTerms
   };

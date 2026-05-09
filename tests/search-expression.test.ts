@@ -215,6 +215,34 @@ describe('simplifySearchExpression', () => {
       'Search expression must have at least one positive term'
     );
   });
+
+  it('should wrap an OR-only expression as a parenthesized main term', () => {
+    const result = simplifySearchExpression('python OR ruby');
+    expect(result.mainTerm).toBe('(python OR ruby)');
+    expect(result.andTerms).toEqual([]);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should not double-wrap an already parenthesized OR expression', () => {
+    const result = simplifySearchExpression('(a OR b)');
+    expect(result.mainTerm).toBe('(a OR b)');
+    expect(result.andTerms).toEqual([]);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should give precedence to required terms over OR sub-expressions', () => {
+    const result = simplifySearchExpression('+golang tutorial');
+    expect(result.mainTerm).toBe('golang');
+    expect(result.andTerms).toEqual(['tutorial']);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should preserve excluded terms alongside an OR-only main term', () => {
+    const result = simplifySearchExpression('python OR ruby -old');
+    expect(result.mainTerm).toBe('(python OR ruby -old)');
+    expect(result.andTerms).toEqual([]);
+    expect(result.notTerms).toEqual(['old']);
+  });
 });
 
 describe('parseSearchExpressionNative', () => {
@@ -285,5 +313,19 @@ describe('parseSearchExpressionNative', () => {
     expect(() => parseSearchExpressionNative('-old -deprecated')).toThrow(
       'Search expression must have at least one positive term'
     );
+  });
+
+  it('should wrap an OR-only expression as a parenthesized main term', () => {
+    const result = parseSearchExpressionNative('python OR ruby');
+    expect(result.mainTerm).toBe('(python OR ruby)');
+    expect(result.andTerms).toEqual([]);
+    expect(result.notTerms).toEqual([]);
+  });
+
+  it('should not double-wrap an already parenthesized OR expression', () => {
+    const result = parseSearchExpressionNative('(a OR b)');
+    expect(result.mainTerm).toBe('(a OR b)');
+    expect(result.andTerms).toEqual([]);
+    expect(result.notTerms).toEqual([]);
   });
 });
