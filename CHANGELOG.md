@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-15
+
+Tracks MygramDB **v1.7.0** (database-qualified table identity, boolean search,
+on-demand sync, runtime variables). All additions are backward compatible:
+existing single-database, single-token usage produces byte-identical commands.
+
+### Added
+
+- **Database-qualified table identity** — every table-taking method
+  (`search`, `count`, `get`, `facet`, `sync`, ...) now accepts a
+  `database.table` identity (e.g. `app_db.articles`) for MygramDB v1.7+
+  multi-database deployments. Bare names keep working for single-database
+  servers. New helpers `qualifyTableIdentity(table, database?)` and
+  `parseTableIdentity(identity)` build and split identities.
+- **`searchRaw()` / `searchRawWithHighlights()`** — send a pre-built boolean
+  expression (`AND` / `OR` / `NOT` / parentheses) as a single token so the
+  server's AST parser interprets it. Pair with `convertSearchExpression()` to
+  preserve OR / grouping semantics that the AND/NOT decomposition of `search()`
+  cannot express. New `SearchRawOptions` type.
+- **`searchWithHighlights()`** — convenience wrapper around `search()` with the
+  `HIGHLIGHT` clause enabled, mirroring the C++ client's `SearchWithHighlights`.
+- **Runtime variables** — `setVariable(name, value)` (`SET`) and
+  `showVariables(likePattern?)` (`SHOW VARIABLES [LIKE ...]`).
+- **On-demand sync** — `sync(table)`, `syncStatus()`, and `syncStop(table?)`
+  (`SYNC` / `SYNC STATUS` / `SYNC STOP`). The transport now recognizes the
+  `OK SYNC_STATUS ... END` multi-line response frame.
+- All of the above are mirrored on `NativeMygramClient`, which also gains the
+  previously missing `cacheStats`/`cacheClear`/`cacheEnable`/`cacheDisable`,
+  `optimize`, and `dumpSave`/`dumpLoad`/`dumpStatus`/`dumpVerify`/`dumpInfo`
+  methods so both clients expose the same surface.
+- **Self-contained docker-compose e2e** under `tests/docker/` (MySQL seeded with
+  a fixed dataset + a published MygramDB server image). Run with
+  `yarn test:e2e:docker`; the seeded block in `tests/e2e.test.ts` asserts exact
+  result sets for qualified identity, boolean `searchRaw`, facets, highlight,
+  and Japanese (ngram) matching.
+
+### Fixed
+
+- **Multi-line responses ending in `END\r\n\r\n` are now framed correctly.**
+  `SYNC STATUS` appends a trailing blank line after the `END` marker; the
+  transport previously required exactly `END\r\n` and would block until timeout.
+  (Found by the new docker e2e.)
+
+### Changed
+
+- **Dump filepaths are now quoted instead of rejected when they contain
+  whitespace** (`dumpSave`/`dumpLoad`/`dumpVerify`/`dumpInfo`), matching the C++
+  client's `QuoteCommandArgumentIfNeeded`. Control characters are still
+  rejected.
+
+- **Query/term quoting now matches the C++ client's `EscapeQueryString`.**
+  Query text, `andTerms`, `notTerms`, and filter values that contain
+  whitespace or quote characters are wrapped in double quotes (escaping inner
+  `"` / `\`) so they reach the server as a single token. Single-token values
+  are still sent verbatim, so existing simple queries are unaffected; only
+  multi-word values change (e.g. `FILTER status = in progress` →
+  `FILTER status = "in progress"`), fixing commands that previously split
+  mid-value.
+
 ## [1.2.1] - 2026-05-09
 
 ### Fixed

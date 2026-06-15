@@ -155,6 +155,45 @@ for (const v of top.results) {
 }
 ```
 
+## MygramDB v1.7 の機能
+
+### マルチデータベース（修飾テーブル識別子）
+
+v1.7+ のインスタンスは複数のデータベースのテーブルをインデックスできます。
+テーブルは `database.table` 形式で参照します。単一データベースのサーバーでは
+従来どおり bare な名前も使用できます。
+
+```typescript
+await client.search('app_db.articles', 'hello');
+
+import { qualifyTableIdentity, parseTableIdentity } from 'mygramdb-client';
+qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
+parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
+```
+
+### ブール検索
+
+`search()` はクエリを1つの（自動クォートされた）トークンとして送信します。
+ブール（`AND`/`OR`/`NOT`/グループ化）には式を組み立てて `searchRaw()` に渡します:
+
+```typescript
+import { convertSearchExpression } from 'mygramdb-client';
+
+const raw = convertSearchExpression('python OR (ruby AND rails)');
+const res = await client.searchRaw('articles', raw, { limit: 50 });
+```
+
+### ランタイム変数とオンデマンド SYNC
+
+```typescript
+await client.setVariable('logging.level', 'info');
+console.log(await client.showVariables('logging%'));
+
+await client.sync('app_db.articles');
+console.log(await client.syncStatus());
+await client.syncStop('app_db.articles');
+```
+
 ## TypeScript
 
 完全な型定義を同梱しています:

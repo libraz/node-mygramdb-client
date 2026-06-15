@@ -307,7 +307,13 @@ export class Connection {
   }
 }
 
-const END_MARKER_FIRST_LINES = new Set<string>(['OK INFO', 'OK REPLICATION', 'OK CACHE_STATS', 'OK DUMP_STATUS']);
+const END_MARKER_FIRST_LINES = new Set<string>([
+  'OK INFO',
+  'OK REPLICATION',
+  'OK CACHE_STATS',
+  'OK DUMP_STATUS',
+  'OK SYNC_STATUS'
+]);
 
 const BLANK_LINE_FIRST_LINE_PREFIXES = ['+OK', 'OK CONFIG', 'OK FACET'];
 
@@ -318,8 +324,8 @@ const BLANK_LINE_FIRST_LINE_PREFIXES = ['+OK', 'OK CONFIG', 'OK FACET'];
  * `protocol_detection.h::IsResponseComplete`:
  *
  *   - `OK INFO`, `OK REPLICATION`, `OK CACHE_STATS`, `OK DUMP_INFO`,
- *     `OK DUMP_STATUS` end with `END\r\n`. These responses contain
- *     internal blank lines, so `\r\n\r\n` is NOT accepted.
+ *     `OK DUMP_STATUS`, `OK SYNC_STATUS` end with `END\r\n`. These
+ *     responses contain internal blank lines, so `\r\n\r\n` is NOT accepted.
  *   - `+OK`, `OK CONFIG`, `OK FACET` end with `\r\n\r\n`.
  *   - Other responses (`OK RESULTS`, `OK COUNT`, `OK DOC`, `OK`,
  *     `OK DUMP_*`, `ERROR ...`) are single-line when the first `\r\n` is
@@ -383,12 +389,11 @@ function isBlankLineResponse(firstLine: string): boolean {
 }
 
 function endsWithEndMarker(buffer: string): boolean {
-  return (
-    buffer.endsWith('\r\nEND\r\n') ||
-    buffer.endsWith('\nEND\n') ||
-    buffer.endsWith('\r\nEND') ||
-    buffer.endsWith('\nEND')
-  );
+  // The `END` terminator sits on its own line. Most multi-line responses end
+  // with `...\r\nEND\r\n`, but some (e.g. SYNC_STATUS) append an extra blank
+  // line and end with `...\r\nEND\r\n\r\n`. Accept `END` as the final
+  // non-empty line regardless of how many trailing CRLFs follow.
+  return /(?:\r?\n)END(?:\r?\n)*$/.test(buffer);
 }
 
 function endsWithBlankLine(buffer: string): boolean {

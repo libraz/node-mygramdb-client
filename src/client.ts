@@ -7,8 +7,18 @@
  *   - {@link ./response-parser} - response payload parsing
  */
 
-import { buildCountCommand, buildFacetCommand, buildGetCommand, buildSearchCommand } from './command-builder.js';
-import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier } from './command-utils.js';
+import {
+  buildCountCommand,
+  buildFacetCommand,
+  buildGetCommand,
+  buildSearchCommand,
+  buildSearchRawCommand,
+  buildSetVariableCommand,
+  buildShowVariablesCommand,
+  buildSyncCommand,
+  buildSyncStopCommand
+} from './command-builder.js';
+import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier, quoteCommandArgument } from './command-utils.js';
 import { Connection } from './connection.js';
 import { ProtocolError } from './errors.js';
 import {
@@ -32,6 +42,7 @@ import type {
   FacetResponse,
   ReplicationStatus,
   SearchOptions,
+  SearchRawOptions,
   SearchResponse,
   ServerInfo
 } from './types.js';
@@ -117,7 +128,15 @@ export class MygramClient {
   /**
    * Search for documents in a table.
    *
-   * @param {string} table - Table name to search in
+   * The query is sent as a single token: multi-word phrases are quoted
+   * automatically so `client.search('articles', 'machine learning')` performs
+   * a phrase search. To use boolean `AND`/`OR`/`NOT`/grouping semantics, build
+   * the expression with {@link convertSearchExpression} and pass it to
+   * {@link searchRaw}.
+   *
+   * @param {string} table - Table name to search in. In a MygramDB v1.7+
+   *   multi-database deployment use a `database.table` identity (e.g.
+   *   `app_db.articles`); a bare name still works for single-database servers.
    * @param {string} query - Search query text
    * @param {SearchOptions} [options={}] - Search options
    * @returns {Promise<SearchResponse>} Search response
@@ -129,6 +148,69 @@ export class MygramClient {
     const command = buildSearchCommand(table, query, options, this.config.maxQueryLength);
     const response = await this.connection.sendCommand(command);
     return parseSearchResponse(response);
+  }
+
+  /**
+   * {@link search} variant that requests highlighted snippets.
+   *
+   * Convenience wrapper that enables the `HIGHLIGHT` clause: any highlight
+   * options passed in `options` are preserved, otherwise server defaults are
+   * used. Snippets are returned in {@link SearchResult.snippet}.
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @param {string} query - Search query text
+   * @param {SearchOptions} [options={}] - Search options
+   * @returns {Promise<SearchResponse>} Search response with snippets
+   */
+  async searchWithHighlights(table: string, query: string, options: SearchOptions = {}): Promise<SearchResponse> {
+    return this.search(table, query, { ...options, highlight: options.highlight ?? {} });
+  }
+
+  /**
+   * Search using a pre-built boolean expression (MygramDB v1.7+).
+   *
+   * The expression is sent as one quoted token so the server's AST parser can
+   * interpret `AND` / `OR` / `NOT` / parentheses. Pair this with
+   * {@link convertSearchExpression} to preserve OR / grouping semantics that
+   * {@link search}'s AND/NOT decomposition cannot express.
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @param {string} rawQuery - Pre-built boolean expression
+   * @param {SearchRawOptions} [options={}] - Limit/offset/highlight options
+   * @returns {Promise<SearchResponse>} Search response
+   * @throws {ConnectionError} If not connected
+   * @throws {ProtocolError} On server error or invalid response
+   *
+   * @example
+   * ```typescript
+   * const raw = convertSearchExpression('python OR (ruby AND rails)');
+   * const res = await client.searchRaw('articles', raw, { limit: 50 });
+   * ```
+   */
+  async searchRaw(table: string, rawQuery: string, options: SearchRawOptions = {}): Promise<SearchResponse> {
+    const command = buildSearchRawCommand(table, rawQuery, options);
+    const response = await this.connection.sendCommand(command);
+    return parseSearchResponse(response);
+  }
+
+  /**
+   * {@link searchRaw} variant that requests highlighted snippets.
+   *
+   * Equivalent to calling {@link searchRaw} with a `highlight` option; any
+   * highlight options passed in `options` are preserved, otherwise server
+   * defaults are used.
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @param {string} rawQuery - Pre-built boolean expression
+   * @param {SearchRawOptions} [options={}] - Limit/offset/highlight options
+   * @returns {Promise<SearchResponse>} Search response with snippets
+   */
+  async searchRawWithHighlights(
+    table: string,
+    rawQuery: string,
+    options: SearchRawOptions = {}
+  ): Promise<SearchResponse> {
+    return this.searchRaw(table, rawQuery, { ...options, highlight: options.highlight ?? {} });
   }
 
   /**
@@ -261,7 +343,7 @@ export class MygramClient {
    * @returns {Promise<string>} The filepath where the dump is being saved
    */
   async dumpSave(filepath: string): Promise<string> {
-    const safeFilepath = ensureSafeIdentifier(filepath, 'filepath');
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
     const response = await this.connection.sendCommand(`DUMP SAVE ${safeFilepath}`);
     if (response.startsWith('OK DUMP_STARTED ')) {
       return response.substring('OK DUMP_STARTED '.length);
@@ -279,7 +361,7 @@ export class MygramClient {
    * @returns {Promise<void>}
    */
   async dumpLoad(filepath: string): Promise<void> {
-    const safeFilepath = ensureSafeIdentifier(filepath, 'filepath');
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
     const response = await this.connection.sendCommand(`DUMP LOAD ${safeFilepath}`);
     expectOk(response, 'Failed to load dump');
   }
@@ -301,7 +383,7 @@ export class MygramClient {
    * @returns {Promise<string>} Verification result message
    */
   async dumpVerify(filepath: string): Promise<string> {
-    const safeFilepath = ensureSafeIdentifier(filepath, 'filepath');
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
     const response = await this.connection.sendCommand(`DUMP VERIFY ${safeFilepath}`);
     expectOk(response, 'Failed to verify dump');
     return response;
@@ -314,7 +396,7 @@ export class MygramClient {
    * @returns {Promise<string>} Dump metadata as a string
    */
   async dumpInfo(filepath: string): Promise<string> {
-    const safeFilepath = ensureSafeIdentifier(filepath, 'filepath');
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
     const response = await this.connection.sendCommand(`DUMP INFO ${safeFilepath}`);
     expectOk(response, 'Failed to get dump info');
     return response;
@@ -375,6 +457,68 @@ export class MygramClient {
   }
 
   /**
+   * Set a runtime variable (MygramDB v1.7+, MySQL-compatible `SET`).
+   *
+   * @param {string} name - Runtime variable name (e.g. `logging.level`)
+   * @param {string} value - New value
+   * @returns {Promise<void>}
+   * @throws {ProtocolError} When the server rejects the assignment
+   */
+  async setVariable(name: string, value: string): Promise<void> {
+    const response = await this.connection.sendCommand(buildSetVariableCommand(name, value));
+    expectAck(response, 'Failed to set variable');
+  }
+
+  /**
+   * Show runtime variables (MygramDB v1.7+, MySQL-compatible `SHOW VARIABLES`).
+   *
+   * @param {string} [likePattern] - Optional MySQL LIKE pattern (e.g. `logging%`)
+   * @returns {Promise<string>} Raw variables table / `+OK` response from the server
+   */
+  async showVariables(likePattern?: string): Promise<string> {
+    return this.connection.sendCommand(buildShowVariablesCommand(likePattern));
+  }
+
+  /**
+   * Start an on-demand sync (full reload) of a table (MygramDB v1.7+).
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @returns {Promise<string>} Server acknowledgement (e.g. `OK SYNC STARTED ...`)
+   * @throws {ProtocolError} When the server rejects the request
+   */
+  async sync(table: string): Promise<string> {
+    const response = await this.connection.sendCommand(buildSyncCommand(table));
+    expectOk(response, 'Failed to start sync');
+    return response;
+  }
+
+  /**
+   * Get the status of in-flight / recent sync operations (MygramDB v1.7+).
+   *
+   * @returns {Promise<string>} Raw `SYNC_STATUS` report from the server
+   * @throws {ProtocolError} When the response is not a SYNC status response
+   */
+  async syncStatus(): Promise<string> {
+    const response = await this.connection.sendCommand('SYNC STATUS');
+    expectOk(response, 'Failed to get sync status');
+    return response;
+  }
+
+  /**
+   * Stop a running sync (MygramDB v1.7+). With no table, stops every in-flight
+   * sync; with a table, stops only that table's sync.
+   *
+   * @param {string} [table] - Optional table name (bare or `database.table`)
+   * @returns {Promise<string>} Server acknowledgement
+   * @throws {ProtocolError} When the server rejects the request
+   */
+  async syncStop(table?: string): Promise<string> {
+    const response = await this.connection.sendCommand(buildSyncStopCommand(table));
+    expectOk(response, 'Failed to stop sync');
+    return response;
+  }
+
+  /**
    * Send a raw command to the server.
    *
    * Low-level escape hatch for custom commands. Most users should use the
@@ -390,6 +534,20 @@ export class MygramClient {
 
 function expectOk(response: string, errorMessage: string): void {
   if (!response.startsWith('OK')) {
+    throw new ProtocolError(`${errorMessage}: ${response}`);
+  }
+}
+
+/**
+ * Accept either a result-style `OK ...` reply or a Redis-style `+OK ...`
+ * acknowledgement, throwing a {@link ProtocolError} otherwise.
+ *
+ * @param {string} response - Normalized server response
+ * @param {string} errorMessage - Prefix for the thrown error
+ * @returns {void}
+ */
+function expectAck(response: string, errorMessage: string): void {
+  if (!response.startsWith('OK') && !response.startsWith('+OK')) {
     throw new ProtocolError(`${errorMessage}: ${response}`);
   }
 }

@@ -8,16 +8,41 @@
 
 import {
   ensureQueryLengthWithinLimit,
-  ensureSafeCommandValue,
   ensureSafeFilterIdentifiers,
   ensureSafeIdentifier,
   ensureSafeStringArray,
   escapeQueryString,
+  quoteCommandArgument,
   validateFacetColumn,
   validateFuzzy,
   validateHighlight
 } from './command-utils.js';
-import type { CountOptions, FacetOptions, SearchOptions } from './types.js';
+import { InputValidationError } from './errors.js';
+import type { CountOptions, FacetOptions, SearchOptions, SearchRawOptions } from './types.js';
+
+/**
+ * Append the LIMIT / OFFSET clause to a command's token list, matching the
+ * C++ client's `AppendLimitOffset`:
+ *
+ * - `limit > 0` and `offset > 0` emits the atomic `LIMIT <offset>,<limit>`.
+ * - `limit > 0` and `offset === 0` emits `LIMIT <limit>`.
+ * - `limit === 0` and `offset > 0` emits a bare `OFFSET <offset>` so the
+ *   server still skips the first `<offset>` results.
+ *
+ * @param {string[]} parts - Command token list to append to
+ * @param {number} limit - Result limit (0 = server default)
+ * @param {number} offset - Result offset
+ * @returns {void}
+ */
+function appendLimitOffset(parts: string[], limit: number, offset: number): void {
+  if (limit > 0 && offset > 0) {
+    parts.push('LIMIT', `${offset},${limit}`);
+  } else if (limit > 0) {
+    parts.push('LIMIT', `${limit}`);
+  } else if (offset > 0) {
+    parts.push('OFFSET', `${offset}`);
+  }
+}
 
 /**
  * Build a `SEARCH` command line.
@@ -74,13 +99,13 @@ export function buildSearchCommand(
   const parts: string[] = ['SEARCH', safeTable, safeQuery];
 
   andTerms.forEach((term) => {
-    parts.push('AND', term);
+    parts.push('AND', escapeQueryString(term, 'andTerms'));
   });
   notTerms.forEach((term) => {
-    parts.push('NOT', term);
+    parts.push('NOT', escapeQueryString(term, 'notTerms'));
   });
   Object.entries(safeFilters).forEach(([key, value]) => {
-    parts.push('FILTER', key, '=', value);
+    parts.push('FILTER', key, '=', escapeQueryString(value, `filters.${key}.value`));
   });
 
   if (safeSortColumn) {
@@ -91,30 +116,66 @@ export function buildSearchCommand(
     parts.push('FUZZY', `${fuzzy}`);
   }
 
-  if (highlight) {
-    parts.push('HIGHLIGHT');
-    const openTag = highlight.openTag ?? '';
-    const closeTag = highlight.closeTag ?? '';
-    if (openTag !== '' && closeTag !== '') {
-      parts.push('TAG', openTag, closeTag);
-    }
-    if (highlight.snippetLen && highlight.snippetLen > 0) {
-      parts.push('SNIPPET_LEN', `${highlight.snippetLen}`);
-    }
-    if (highlight.maxFragments && highlight.maxFragments > 0) {
-      parts.push('MAX_FRAGMENTS', `${highlight.maxFragments}`);
-    }
-  }
+  appendHighlightClause(parts, highlight);
+  appendLimitOffset(parts, limit, offset);
 
-  if (offset > 0 && limit > 0) {
-    parts.push('LIMIT', `${offset},${limit}`);
-  } else if (offset > 0) {
-    // limit == 0: surface the offset instead of silently dropping it.
-    parts.push('OFFSET', `${offset}`);
-  } else if (limit > 0) {
-    parts.push('LIMIT', `${limit}`);
-  }
+  return parts.join(' ');
+}
 
+/**
+ * Append the HIGHLIGHT clause (and its TAG / SNIPPET_LEN / MAX_FRAGMENTS
+ * sub-options) when highlight options are present.
+ *
+ * @param {string[]} parts - Command token list to append to
+ * @param {SearchOptions['highlight']} highlight - Highlight options (no-op when undefined)
+ * @returns {void}
+ */
+function appendHighlightClause(parts: string[], highlight: SearchOptions['highlight']): void {
+  if (!highlight) return;
+  parts.push('HIGHLIGHT');
+  const openTag = highlight.openTag ?? '';
+  const closeTag = highlight.closeTag ?? '';
+  if (openTag !== '' && closeTag !== '') {
+    parts.push('TAG', openTag, closeTag);
+  }
+  if (highlight.snippetLen && highlight.snippetLen > 0) {
+    parts.push('SNIPPET_LEN', `${highlight.snippetLen}`);
+  }
+  if (highlight.maxFragments && highlight.maxFragments > 0) {
+    parts.push('MAX_FRAGMENTS', `${highlight.maxFragments}`);
+  }
+}
+
+/**
+ * Build a `SEARCH` command line that sends a pre-built boolean expression as a
+ * single search token (MygramDB v1.7+).
+ *
+ * The raw expression (e.g. `python OR (ruby AND rails)`) is escaped with the
+ * same quoting rules as a normal query so the server's AST parser receives one
+ * token and can interpret `AND` / `OR` / `NOT` / parentheses. Use this with the
+ * output of {@link ../search-expression.convertSearchExpression} when boolean
+ * grouping semantics must be preserved rather than decomposed into AND/NOT
+ * clauses.
+ *
+ * @param {string} table - Table name (bare or `database.table`)
+ * @param {string} rawQuery - Pre-built boolean expression
+ * @param {SearchRawOptions} options - Limit/offset/highlight options
+ * @returns {string} Wire command (no trailing CRLF)
+ * @throws {InputValidationError} When the table or expression is invalid
+ */
+export function buildSearchRawCommand(table: string, rawQuery: string, options: SearchRawOptions): string {
+  const { limit = 0, offset = 0, highlight } = options;
+
+  const safeTable = ensureSafeIdentifier(table, 'table');
+  if (rawQuery === '') {
+    throw new InputValidationError('Input for rawQuery must not be empty');
+  }
+  const safeQuery = escapeQueryString(rawQuery, 'rawQuery');
+  validateHighlight(highlight);
+
+  const parts: string[] = ['SEARCH', safeTable, safeQuery];
+  appendHighlightClause(parts, highlight);
+  appendLimitOffset(parts, limit, offset);
   return parts.join(' ');
 }
 
@@ -149,13 +210,13 @@ export function buildCountCommand(table: string, query: string, options: CountOp
 
   const parts: string[] = ['COUNT', safeTable, safeQuery];
   andTerms.forEach((term) => {
-    parts.push('AND', term);
+    parts.push('AND', escapeQueryString(term, 'andTerms'));
   });
   notTerms.forEach((term) => {
-    parts.push('NOT', term);
+    parts.push('NOT', escapeQueryString(term, 'notTerms'));
   });
   Object.entries(safeFilters).forEach(([key, value]) => {
-    parts.push('FILTER', key, '=', value);
+    parts.push('FILTER', key, '=', escapeQueryString(value, `filters.${key}.value`));
   });
   return parts.join(' ');
 }
@@ -182,13 +243,12 @@ export function buildFacetCommand(
 
   const safeTable = ensureSafeIdentifier(table, 'table');
   validateFacetColumn(column);
-  const safeQuery = query ? ensureSafeCommandValue(query, 'query') : '';
   ensureSafeStringArray(andTerms, 'andTerms');
   ensureSafeStringArray(notTerms, 'notTerms');
   const safeFilters = ensureSafeFilterIdentifiers(filters);
   ensureQueryLengthWithinLimit(
     {
-      query: safeQuery,
+      query,
       andTerms,
       notTerms,
       filters: safeFilters,
@@ -199,16 +259,16 @@ export function buildFacetCommand(
 
   const parts: string[] = ['FACET', safeTable, column];
 
-  if (safeQuery !== '') {
-    parts.push('QUERY', safeQuery);
+  if (query !== '') {
+    parts.push('QUERY', escapeQueryString(query, 'query'));
     andTerms.forEach((term) => {
-      parts.push('AND', term);
+      parts.push('AND', escapeQueryString(term, 'andTerms'));
     });
     notTerms.forEach((term) => {
-      parts.push('NOT', term);
+      parts.push('NOT', escapeQueryString(term, 'notTerms'));
     });
     Object.entries(safeFilters).forEach(([key, value]) => {
-      parts.push('FILTER', key, '=', value);
+      parts.push('FILTER', key, '=', escapeQueryString(value, `filters.${key}.value`));
     });
   }
 
@@ -230,4 +290,64 @@ export function buildGetCommand(table: string, primaryKey: string): string {
   const safeTable = ensureSafeIdentifier(table, 'table');
   const safePrimaryKey = ensureSafeIdentifier(primaryKey, 'primaryKey');
   return `GET ${safeTable} ${safePrimaryKey}`;
+}
+
+/**
+ * Build a `SET <name> = <value>` runtime-variable command line (MygramDB v1.7+).
+ *
+ * The variable name is sent unquoted (validated as an identifier); the value
+ * is quoted when it contains whitespace or quote characters.
+ *
+ * @param {string} name - Runtime variable name
+ * @param {string} value - New value
+ * @returns {string} Wire command (no trailing CRLF)
+ * @throws {InputValidationError} When the name is empty/unsafe or the value
+ *   contains control characters
+ */
+export function buildSetVariableCommand(name: string, value: string): string {
+  const safeName = ensureSafeIdentifier(name, 'name');
+  const safeValue = quoteCommandArgument(value, 'value');
+  return `SET ${safeName} = ${safeValue}`;
+}
+
+/**
+ * Build a `SHOW VARIABLES [LIKE <pattern>]` command line (MygramDB v1.7+).
+ *
+ * @param {string} [likePattern] - Optional MySQL-style LIKE pattern
+ * @returns {string} Wire command (no trailing CRLF)
+ * @throws {InputValidationError} When the pattern contains control characters
+ */
+export function buildShowVariablesCommand(likePattern?: string): string {
+  if (likePattern === undefined || likePattern === '') {
+    return 'SHOW VARIABLES';
+  }
+  return `SHOW VARIABLES LIKE ${quoteCommandArgument(likePattern, 'likePattern')}`;
+}
+
+/**
+ * Build a `SYNC <table>` command line (MygramDB v1.7+).
+ *
+ * @param {string} table - Table name (bare or `database.table`)
+ * @returns {string} Wire command (no trailing CRLF)
+ * @throws {InputValidationError} When the table name is empty/unsafe
+ */
+export function buildSyncCommand(table: string): string {
+  return `SYNC ${ensureSafeIdentifier(table, 'table')}`;
+}
+
+/**
+ * Build a `SYNC STOP [table]` command line (MygramDB v1.7+).
+ *
+ * An empty/omitted table stops every in-flight sync; a named table validates
+ * as an identifier and stops only that table.
+ *
+ * @param {string} [table] - Optional table name (bare or `database.table`)
+ * @returns {string} Wire command (no trailing CRLF)
+ * @throws {InputValidationError} When a non-empty table name is unsafe
+ */
+export function buildSyncStopCommand(table?: string): string {
+  if (table === undefined || table === '') {
+    return 'SYNC STOP';
+  }
+  return `SYNC STOP ${ensureSafeIdentifier(table, 'table')}`;
 }

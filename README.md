@@ -156,6 +156,44 @@ for (const v of top.results) {
 }
 ```
 
+## MygramDB v1.7 Features
+
+### Multi-database (qualified table identity)
+
+A v1.7+ instance can index tables from more than one database. Reference a
+table as `database.table`; bare names still work on single-database servers.
+
+```typescript
+await client.search('app_db.articles', 'hello');
+
+import { qualifyTableIdentity, parseTableIdentity } from 'mygramdb-client';
+qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
+parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
+```
+
+### Boolean search
+
+`search()` sends the query as a single (auto-quoted) token. For boolean
+`AND`/`OR`/`NOT`/grouping, build the expression and pass it to `searchRaw()`:
+
+```typescript
+import { convertSearchExpression } from 'mygramdb-client';
+
+const raw = convertSearchExpression('python OR (ruby AND rails)');
+const res = await client.searchRaw('articles', raw, { limit: 50 });
+```
+
+### Runtime variables and on-demand sync
+
+```typescript
+await client.setVariable('logging.level', 'info');
+console.log(await client.showVariables('logging%'));
+
+await client.sync('app_db.articles');
+console.log(await client.syncStatus());
+await client.syncStop('app_db.articles');
+```
+
 ## TypeScript
 
 Full type definitions are included:

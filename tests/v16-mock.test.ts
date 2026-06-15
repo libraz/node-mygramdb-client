@@ -327,7 +327,8 @@ describe('MygramClient.facet', () => {
 
     const command = (socket.write as MockInstance).mock.calls[0][0] as string;
     expect(command).toContain('FACET articles category');
-    expect(command).toContain('QUERY machine learning');
+    // Multi-word query text is quoted so it reaches the server as one token.
+    expect(command).toContain('QUERY "machine learning"');
     expect(command).toContain('AND python');
     expect(command).toContain('NOT draft');
     expect(command).toContain('FILTER status = 1');

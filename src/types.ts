@@ -223,6 +223,25 @@ export interface SearchOptions {
 }
 
 /**
+ * Options for {@link MygramClient.searchRaw} (MygramDB v1.7+).
+ *
+ * Unlike {@link SearchOptions}, a raw search sends a pre-built boolean
+ * expression as a single token, so it exposes only pagination and highlight
+ * controls — AND/NOT/FILTER refinements belong inside the expression itself.
+ */
+export interface SearchRawOptions {
+  /** Maximum number of results to return (0 = server default) */
+  limit?: number;
+  /** Result offset for pagination */
+  offset?: number;
+  /**
+   * HIGHLIGHT clause options. Pass an empty object (`{}`) to enable
+   * highlighting with server defaults.
+   */
+  highlight?: HighlightOptions;
+}
+
+/**
  * Count options
  */
 export interface CountOptions {

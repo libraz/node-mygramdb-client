@@ -89,10 +89,14 @@ async search(
 ): Promise<SearchResponse>
 ```
 
-Searches for documents in the specified table.
+Searches for documents in the specified table. Multi-word queries are quoted
+automatically so they reach the server as a single phrase token; use
+[`searchRaw()`](#searchraw) for boolean `AND`/`OR`/`NOT`/grouping expressions.
 
 **Parameters:**
-- `table` (string) - Name of the table to search
+- `table` (string) - Name of the table to search. In a MygramDB v1.7+
+  multi-database deployment, pass a `database.table` identity (e.g.
+  `app_db.articles`); a bare name still works for single-database servers.
 - `query` (string) - Search query text
 - `options` (SearchOptions, optional) - Search options
 
@@ -121,6 +125,9 @@ results.results.forEach((result) => {
   console.log(`ID: ${result.primaryKey}`);
 });
 ```
+
+`searchWithHighlights(table, query, options?)` is the same call with the
+`HIGHLIGHT` clause enabled, returning snippets in `result.snippet`.
 
 ### count()
 
@@ -154,6 +161,38 @@ const count = await client.count('articles', 'machine learning', {
 });
 console.log(`Total matches: ${count.count}`);
 ```
+
+### searchRaw()
+
+```typescript
+async searchRaw(
+  table: string,
+  rawQuery: string,
+  options?: SearchRawOptions
+): Promise<SearchResponse>
+```
+
+Searches using a pre-built boolean expression (MygramDB v1.7+). The expression
+is sent as one quoted token so the server's AST parser can interpret
+`AND` / `OR` / `NOT` / parentheses. Pair with
+[`convertSearchExpression()`](#exported-functions) to preserve OR / grouping
+semantics that `search()`'s AND/NOT decomposition cannot express.
+
+**Parameters:**
+- `table` (string) - Table name (bare or `database.table`)
+- `rawQuery` (string) - Pre-built boolean expression
+- `options` (SearchRawOptions, optional) - `limit`, `offset`, and `highlight`
+
+**Returns:** Promise resolving to SearchResponse
+
+**Example:**
+```typescript
+const raw = convertSearchExpression('python OR (ruby AND rails)');
+const results = await client.searchRaw('articles', raw, { limit: 50 });
+```
+
+`searchRawWithHighlights(table, rawQuery, options?)` is the same call with a
+`HIGHLIGHT` clause enabled, returning snippets in `result.snippet`.
 
 ## Document Methods
 
@@ -347,6 +386,69 @@ Disables debug mode.
 await client.disableDebug();
 ```
 
+## Runtime Variable Methods (v1.7+)
+
+### setVariable()
+
+```typescript
+async setVariable(name: string, value: string): Promise<void>
+```
+
+Sets a runtime variable (MySQL-compatible `SET`). Values containing whitespace
+are quoted automatically.
+
+```typescript
+await client.setVariable('logging.level', 'info');
+```
+
+### showVariables()
+
+```typescript
+async showVariables(likePattern?: string): Promise<string>
+```
+
+Returns the runtime variables table (`SHOW VARIABLES [LIKE <pattern>]`) as the
+raw server response string.
+
+```typescript
+const table = await client.showVariables('logging%');
+```
+
+## Sync Methods (v1.7+)
+
+### sync()
+
+```typescript
+async sync(table: string): Promise<string>
+```
+
+Starts an on-demand full reload of a table (`SYNC <table>`). Accepts a bare or
+`database.table` identity. Resolves with the server acknowledgement.
+
+### syncStatus()
+
+```typescript
+async syncStatus(): Promise<string>
+```
+
+Returns the `SYNC STATUS` report (in-flight and recent sync operations) as the
+raw server response string.
+
+### syncStop()
+
+```typescript
+async syncStop(table?: string): Promise<string>
+```
+
+Stops a running sync. With no table, stops every in-flight sync; with a table,
+stops only that table's sync.
+
+```typescript
+await client.sync('app_db.articles');
+console.log(await client.syncStatus());
+await client.syncStop('app_db.articles');
+```
+
 ## Type Definitions
 
 ### ClientConfig
@@ -380,6 +482,16 @@ interface SearchOptions {
 ```typescript
 interface CountOptions {
   filters?: Record<string, string>;  // Filter conditions (column: value)
+}
+```
+
+### SearchRawOptions
+
+```typescript
+interface SearchRawOptions {
+  limit?: number;              // Max results (default: 0 = server default)
+  offset?: number;             // Pagination offset (default: 0)
+  highlight?: HighlightOptions; // Pass {} to enable highlighting with defaults
 }
 ```
 
@@ -503,3 +615,19 @@ class TimeoutError extends MygramError {
 ## Exported Functions
 
 For search expression parsing utilities, see [Search Expression](./search-expression.md).
+
+### Table identity helpers (v1.7+)
+
+```typescript
+qualifyTableIdentity(table: string, database?: string): string
+parseTableIdentity(identity: string): { database: string | null; table: string }
+```
+
+`qualifyTableIdentity` builds a `database.table` identity (or returns the bare
+table when no database is given); `parseTableIdentity` splits one back into its
+parts. Both validate the identifier and reject whitespace / control characters.
+
+```typescript
+qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
+parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
+```

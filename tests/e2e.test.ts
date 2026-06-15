@@ -10,10 +10,17 @@ import { MygramClient } from '../src/client';
 import { createMygramClient, getClientType, isNativeAvailable } from '../src/client-factory';
 import { ProtocolError } from '../src/errors';
 import type { NativeMygramClient } from '../src/native-client';
-import { simplifySearchExpression } from '../src/search-expression';
+import { convertSearchExpression, simplifySearchExpression } from '../src/search-expression';
 
 const TEST_HOST = process.env.MYGRAM_HOST || '127.0.0.1';
 const TEST_PORT = parseInt(process.env.MYGRAM_PORT || '11016', 10);
+
+/**
+ * Set to `1` by tests/docker/run-e2e.sh, which boots a server seeded with the
+ * fixed dataset in tests/docker/mysql-init. Only then can we assert exact
+ * result sets; against an arbitrary developer server these are skipped.
+ */
+const SEEDED = process.env.MYGRAM_E2E_SEEDED === '1';
 
 /** Common client interface for testing both implementations */
 type TestClient = MygramClient | NativeMygramClient;
@@ -473,6 +480,79 @@ function runClientTests(clientName: string, createClient: () => TestClient): voi
         expect(typeof result.count).toBe('number');
       });
     });
+
+    describe('v1.7 database-qualified table identity', () => {
+      it('resolves a database.table identity the same as the bare name', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+
+        // info.tables may already be qualified (database.table) or bare.
+        const reported = info.tables[0];
+        const bare = reported.includes('.') ? reported.slice(reported.indexOf('.') + 1) : reported;
+
+        const viaReported = await client.search(reported, 'test', { limit: 5 });
+        const viaBare = await client.search(bare, 'test', { limit: 5 });
+
+        expect(viaReported.totalCount).toBe(viaBare.totalCount);
+      });
+    });
+
+    describe('v1.7 searchRaw (boolean expressions)', () => {
+      it('round-trips a boolean OR expression', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        const result = await client.searchRaw(table, 'hello OR world', { limit: 5 });
+        expect(result).toBeDefined();
+        expect(typeof result.totalCount).toBe('number');
+        expect(Array.isArray(result.results)).toBe(true);
+      });
+
+      it('round-trips a grouped expression built by convertSearchExpression', async () => {
+        const info = await client.info();
+        if (info.tables.length === 0) return;
+        const table = info.tables[0];
+
+        const raw = convertSearchExpression('hello OR (world AND test)');
+        const result = await client.searchRaw(table, raw, { limit: 5 });
+        expect(typeof result.totalCount).toBe('number');
+      });
+    });
+
+    describe('v1.7 runtime variables', () => {
+      it('round-trips SET and SHOW VARIABLES', async () => {
+        // Some builds mark all variables immutable; tolerate a server rejection
+        // as long as the protocol round-trips cleanly.
+        try {
+          await client.setVariable('logging.level', 'info');
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProtocolError);
+        }
+        const vars = await client.showVariables('logging%');
+        expect(typeof vars).toBe('string');
+        expect(vars.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe('v1.7 sync', () => {
+      it('round-trips SYNC STATUS', async () => {
+        const status = await client.syncStatus();
+        expect(typeof status).toBe('string');
+        expect(status).toContain('SYNC_STATUS');
+      });
+
+      it('round-trips SYNC STOP with no active sync', async () => {
+        // With nothing running the server may answer OK or ERROR; both prove
+        // the command framed correctly.
+        try {
+          const res = await client.syncStop();
+          expect(typeof res).toBe('string');
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProtocolError);
+        }
+      });
+    });
   });
 }
 
@@ -588,6 +668,79 @@ describe('Integration Tests', async () => {
         if (serverInfo.tables.length === 0) return;
         const table = serverInfo.tables[0];
         await expect(jsClient.optimize(table)).resolves.not.toThrow();
+      });
+    });
+
+    // Deterministic assertions against the fixed dataset seeded by
+    // tests/docker/run-e2e.sh. See tests/docker/mysql-init/02-seed.sql.
+    describe.skipIf(!SEEDED)('seeded dataset (docker e2e)', () => {
+      let client: MygramClient;
+      const TABLE = 'testdb.articles'; // database-qualified identity (v1.7)
+
+      const ids = (r: { results: { primaryKey: string }[] }): string[] => r.results.map((d) => d.primaryKey).sort();
+
+      beforeEach(async () => {
+        client = new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 });
+        await client.connect();
+      });
+      afterEach(() => client.disconnect());
+
+      it('search resolves a database-qualified identity to the seeded rows', async () => {
+        const res = await client.search(TABLE, 'python');
+        expect(res.totalCount).toBe(1);
+        expect(ids(res)).toEqual(['3']);
+      });
+
+      it('quotes a multi-word phrase and excludes disabled rows', async () => {
+        // id 6 also contains "machine learning" but is enabled=0 (hidden).
+        const res = await client.search(TABLE, 'machine learning');
+        expect(res.totalCount).toBe(1);
+        expect(ids(res)).toEqual(['3']);
+      });
+
+      it('matches Japanese content', async () => {
+        const res = await client.search(TABLE, '機械学習');
+        expect(res.totalCount).toBe(2);
+        expect(ids(res)).toEqual(['1', '5']);
+      });
+
+      it('count matches a single row', async () => {
+        const res = await client.count(TABLE, 'golang');
+        expect(res.count).toBe(1);
+      });
+
+      it('searchRaw evaluates a boolean OR expression', async () => {
+        const res = await client.searchRaw(TABLE, 'ruby OR python');
+        expect(res.totalCount).toBe(2);
+        expect(ids(res)).toEqual(['2', '3']);
+      });
+
+      it('bare and qualified names resolve identically (single-database)', async () => {
+        const qualified = await client.search('testdb.articles', 'python');
+        const bare = await client.search('articles', 'python');
+        expect(bare.totalCount).toBe(qualified.totalCount);
+        expect(bare.totalCount).toBe(1);
+      });
+
+      it('facet aggregates enabled rows by category', async () => {
+        const resp = await client.facet(TABLE, 'category');
+        const byValue = Object.fromEntries(resp.results.map((v) => [v.value, v.count]));
+        expect(byValue.tech).toBe(3);
+        expect(byValue.science).toBe(2);
+      });
+
+      it('get returns a seeded document by primary key', async () => {
+        const doc = await client.get(TABLE, '1');
+        expect(doc.primaryKey).toBe('1');
+        expect(doc.fields.category).toBe('tech');
+      });
+
+      it('searchWithHighlights returns a snippet wrapping the match', async () => {
+        const res = await client.searchWithHighlights(TABLE, 'python', {
+          highlight: { openTag: '<em>', closeTag: '</em>' }
+        });
+        expect(res.totalCount).toBe(1);
+        expect(res.results[0].snippet).toContain('<em>python</em>');
       });
     });
   });

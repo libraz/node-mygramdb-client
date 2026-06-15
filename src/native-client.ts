@@ -7,26 +7,41 @@
  * `command-builder` and `response-parser` modules.
  */
 
-import { buildCountCommand, buildFacetCommand, buildGetCommand, buildSearchCommand } from './command-builder.js';
-import { DEFAULT_MAX_QUERY_LENGTH } from './command-utils.js';
+import {
+  buildCountCommand,
+  buildFacetCommand,
+  buildGetCommand,
+  buildSearchCommand,
+  buildSearchRawCommand,
+  buildSetVariableCommand,
+  buildShowVariablesCommand,
+  buildSyncCommand,
+  buildSyncStopCommand
+} from './command-builder.js';
+import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier, quoteCommandArgument } from './command-utils.js';
 import { ConnectionError, ProtocolError } from './errors.js';
 import {
+  parseCacheStatsResponse,
   parseCountResponse,
   parseDocumentResponse,
+  parseDumpStatusResponse,
   parseFacetResponse,
   parseInfoResponse,
   parseReplicationStatusResponse,
   parseSearchResponse
 } from './response-parser.js';
 import type {
+  CacheStats,
   ClientConfig,
   CountOptions,
   CountResponse,
   Document,
+  DumpStatus,
   FacetOptions,
   FacetResponse,
   ReplicationStatus,
   SearchOptions,
+  SearchRawOptions,
   SearchResponse,
   ServerInfo
 } from './types.js';
@@ -162,6 +177,48 @@ export class NativeMygramClient {
   }
 
   /**
+   * {@link search} variant that requests highlighted snippets.
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @param {string} query - Search query text
+   * @param {SearchOptions} [options={}] - Search options
+   * @returns {Promise<SearchResponse>} Search response with snippets
+   */
+  async searchWithHighlights(table: string, query: string, options: SearchOptions = {}): Promise<SearchResponse> {
+    return this.search(table, query, { ...options, highlight: options.highlight ?? {} });
+  }
+
+  /**
+   * Search using a pre-built boolean expression (MygramDB v1.7+).
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @param {string} rawQuery - Pre-built boolean expression
+   * @param {SearchRawOptions} [options={}] - Limit/offset/highlight options
+   * @returns {Promise<SearchResponse>} Search response
+   */
+  async searchRaw(table: string, rawQuery: string, options: SearchRawOptions = {}): Promise<SearchResponse> {
+    const command = buildSearchRawCommand(table, rawQuery, options);
+    const response = await this.sendCommand(command);
+    return parseSearchResponse(response);
+  }
+
+  /**
+   * {@link searchRaw} variant that requests highlighted snippets.
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @param {string} rawQuery - Pre-built boolean expression
+   * @param {SearchRawOptions} [options={}] - Limit/offset/highlight options
+   * @returns {Promise<SearchResponse>} Search response with snippets
+   */
+  async searchRawWithHighlights(
+    table: string,
+    rawQuery: string,
+    options: SearchRawOptions = {}
+  ): Promise<SearchResponse> {
+    return this.searchRaw(table, rawQuery, { ...options, highlight: options.highlight ?? {} });
+  }
+
+  /**
    * Aggregate distinct filter-column values with document counts (MygramDB v1.6+).
    *
    * @param {string} table - Table name
@@ -278,6 +335,183 @@ export class NativeMygramClient {
   }
 
   /**
+   * Get cache statistics.
+   *
+   * @returns {Promise<CacheStats>} Cache statistics
+   */
+  async cacheStats(): Promise<CacheStats> {
+    const response = await this.sendCommand('CACHE STATS');
+    return parseCacheStatsResponse(response);
+  }
+
+  /**
+   * Clear the query cache.
+   *
+   * @param {string} [table] - Optional table to clear; clears all if omitted
+   * @returns {Promise<void>}
+   */
+  async cacheClear(table?: string): Promise<void> {
+    const command = table ? `CACHE CLEAR ${ensureSafeIdentifier(table, 'table')}` : 'CACHE CLEAR';
+    const response = await this.sendCommand(command);
+    expectOk(response, 'Failed to clear cache');
+  }
+
+  /**
+   * Enable the query cache.
+   *
+   * @returns {Promise<void>}
+   */
+  async cacheEnable(): Promise<void> {
+    const response = await this.sendCommand('CACHE ENABLE');
+    expectOk(response, 'Failed to enable cache');
+  }
+
+  /**
+   * Disable the query cache.
+   *
+   * @returns {Promise<void>}
+   */
+  async cacheDisable(): Promise<void> {
+    const response = await this.sendCommand('CACHE DISABLE');
+    expectOk(response, 'Failed to disable cache');
+  }
+
+  /**
+   * Optimize (rebuild) the index for a table or all tables.
+   *
+   * @param {string} [table] - Optional table to optimize; all if omitted
+   * @returns {Promise<void>}
+   */
+  async optimize(table?: string): Promise<void> {
+    const command = table ? `OPTIMIZE ${ensureSafeIdentifier(table, 'table')}` : 'OPTIMIZE';
+    const response = await this.sendCommand(command);
+    expectOk(response, 'Failed to optimize');
+  }
+
+  /**
+   * Save a dump of the index to the specified file path.
+   *
+   * @param {string} filepath - File path on the server to save the dump
+   * @returns {Promise<string>} The filepath where the dump is being saved
+   */
+  async dumpSave(filepath: string): Promise<string> {
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP SAVE ${safeFilepath}`);
+    if (response.startsWith('OK DUMP_STARTED ')) {
+      return response.substring('OK DUMP_STARTED '.length);
+    }
+    if (response.startsWith('OK DUMP_SAVED ')) {
+      return response.substring('OK DUMP_SAVED '.length);
+    }
+    throw new ProtocolError(`Invalid DUMP SAVE response: ${response}`);
+  }
+
+  /**
+   * Load a dump from the specified file path.
+   *
+   * @param {string} filepath - File path on the server to load the dump from
+   * @returns {Promise<void>}
+   */
+  async dumpLoad(filepath: string): Promise<void> {
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP LOAD ${safeFilepath}`);
+    expectOk(response, 'Failed to load dump');
+  }
+
+  /**
+   * Get the status of an ongoing dump operation.
+   *
+   * @returns {Promise<DumpStatus>} Current dump operation status
+   */
+  async dumpStatus(): Promise<DumpStatus> {
+    const response = await this.sendCommand('DUMP STATUS');
+    return parseDumpStatusResponse(response);
+  }
+
+  /**
+   * Verify the integrity of a dump file.
+   *
+   * @param {string} filepath - File path of the dump to verify
+   * @returns {Promise<string>} Verification result message
+   */
+  async dumpVerify(filepath: string): Promise<string> {
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP VERIFY ${safeFilepath}`);
+    expectOk(response, 'Failed to verify dump');
+    return response;
+  }
+
+  /**
+   * Get metadata information about a dump file.
+   *
+   * @param {string} filepath - File path of the dump to inspect
+   * @returns {Promise<string>} Dump metadata as a string
+   */
+  async dumpInfo(filepath: string): Promise<string> {
+    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
+    const response = await this.sendCommand(`DUMP INFO ${safeFilepath}`);
+    expectOk(response, 'Failed to get dump info');
+    return response;
+  }
+
+  /**
+   * Set a runtime variable (MygramDB v1.7+).
+   *
+   * @param {string} name - Runtime variable name
+   * @param {string} value - New value
+   * @returns {Promise<void>}
+   */
+  async setVariable(name: string, value: string): Promise<void> {
+    const response = await this.sendCommand(buildSetVariableCommand(name, value));
+    expectAck(response, 'Failed to set variable');
+  }
+
+  /**
+   * Show runtime variables (MygramDB v1.7+).
+   *
+   * @param {string} [likePattern] - Optional MySQL LIKE pattern
+   * @returns {Promise<string>} Raw variables response from the server
+   */
+  async showVariables(likePattern?: string): Promise<string> {
+    return this.sendCommand(buildShowVariablesCommand(likePattern));
+  }
+
+  /**
+   * Start an on-demand sync of a table (MygramDB v1.7+).
+   *
+   * @param {string} table - Table name (bare or `database.table`)
+   * @returns {Promise<string>} Server acknowledgement
+   */
+  async sync(table: string): Promise<string> {
+    const response = await this.sendCommand(buildSyncCommand(table));
+    expectOk(response, 'Failed to start sync');
+    return response;
+  }
+
+  /**
+   * Get the status of in-flight / recent sync operations (MygramDB v1.7+).
+   *
+   * @returns {Promise<string>} Raw SYNC_STATUS report
+   */
+  async syncStatus(): Promise<string> {
+    const response = await this.sendCommand('SYNC STATUS');
+    expectOk(response, 'Failed to get sync status');
+    return response;
+  }
+
+  /**
+   * Stop a running sync (MygramDB v1.7+).
+   *
+   * @param {string} [table] - Optional table name (bare or `database.table`)
+   * @returns {Promise<string>} Server acknowledgement
+   */
+  async syncStop(table?: string): Promise<string> {
+    const response = await this.sendCommand(buildSyncStopCommand(table));
+    expectOk(response, 'Failed to stop sync');
+    return response;
+  }
+
+  /**
    * Send raw command to server.
    *
    * @param {string} command - Command string
@@ -312,6 +546,20 @@ export class NativeMygramClient {
 
 function expectOk(response: string, errorMessage: string): void {
   if (!response.startsWith('OK')) {
+    throw new ProtocolError(`${errorMessage}: ${response}`);
+  }
+}
+
+/**
+ * Accept either a result-style `OK ...` reply or a Redis-style `+OK ...`
+ * acknowledgement, throwing a {@link ProtocolError} otherwise.
+ *
+ * @param {string} response - Normalized server response
+ * @param {string} errorMessage - Prefix for the thrown error
+ * @returns {void}
+ */
+function expectAck(response: string, errorMessage: string): void {
+  if (!response.startsWith('OK') && !response.startsWith('+OK')) {
     throw new ProtocolError(`${errorMessage}: ${response}`);
   }
 }

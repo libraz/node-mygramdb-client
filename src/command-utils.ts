@@ -104,10 +104,74 @@ export function ensureSafeFilterIdentifiers(filters: Record<string, string>): Re
 }
 
 /**
+ * Wrap a value in double quotes when it would otherwise split into multiple
+ * protocol tokens, escaping the characters that are special inside a quoted
+ * token.
+ *
+ * This mirrors the C++ client's `EscapeQueryString` /
+ * `QuoteCommandArgumentIfNeeded`: a value is quoted when it is empty or
+ * contains whitespace or a quote character. Inside the quotes, `"` and `\`
+ * are backslash-escaped and any remaining control characters (code < 0x20)
+ * are dropped. Values that need no quoting are returned verbatim so simple
+ * single-token queries stay byte-identical on the wire.
+ *
+ * `quoteOnBackslash` selects which upstream helper is mirrored: query strings
+ * follow `EscapeQueryString` (a lone backslash does NOT force quoting), while
+ * command arguments follow `QuoteCommandArgumentIfNeeded` (a backslash does).
+ *
+ * @param {string} value - Value to quote (already control-char validated)
+ * @param {boolean} quoteOnBackslash - Whether a lone `\` forces quoting
+ * @returns {string} Wire-safe single token
+ */
+function quoteTokenIfNeeded(value: string, quoteOnBackslash: boolean): string {
+  if (value === '') {
+    return '""';
+  }
+
+  let needsQuotes = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (
+      char === ' ' ||
+      char === '\t' ||
+      char === '\n' ||
+      char === '\r' ||
+      char === '"' ||
+      char === "'" ||
+      (quoteOnBackslash && char === '\\')
+    ) {
+      needsQuotes = true;
+      break;
+    }
+  }
+
+  if (!needsQuotes) {
+    return value;
+  }
+
+  let result = '"';
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (char.charCodeAt(0) < 0x20) {
+      // Drop control characters to prevent command injection.
+      continue;
+    }
+    if (char === '"' || char === '\\') {
+      result += '\\';
+    }
+    result += char;
+  }
+  result += '"';
+  return result;
+}
+
+/**
  * Escape a query string for transmission. Empty strings are surfaced as
  * the explicit token `""` so the server receives a well-formed empty
- * argument instead of a malformed command. Non-empty strings are passed
- * through unchanged after the standard control-character validation.
+ * argument. Non-empty strings are validated for control characters and then
+ * quoted when they contain whitespace or quote characters, matching the C++
+ * client's `EscapeQueryString` so multi-word phrases and boolean expressions
+ * reach the server as a single token.
  *
  * @param {string} value - Query string value
  * @param {string} fieldName - Field name for clearer error messages
@@ -118,7 +182,91 @@ export function escapeQueryString(value: string, fieldName: string): string {
   if (value === '') {
     return '""';
   }
-  return ensureSafeCommandValue(value, fieldName);
+  ensureSafeCommandValue(value, fieldName);
+  return quoteTokenIfNeeded(value, false);
+}
+
+/**
+ * Quote a free-form command argument (e.g. a `SET` value or `SHOW VARIABLES
+ * LIKE` pattern) when it contains whitespace or quote characters. Mirrors the
+ * C++ client's `QuoteCommandArgumentIfNeeded`.
+ *
+ * Unlike {@link escapeQueryString}, an empty value is allowed and surfaced as
+ * the explicit empty token `""`.
+ *
+ * @param {string} value - Argument value
+ * @param {string} fieldName - Field name for clearer error messages
+ * @returns {string} Wire-safe single token
+ * @throws {InputValidationError} When the value contains control characters
+ */
+export function quoteCommandArgument(value: string, fieldName: string): string {
+  if (value !== '') {
+    ensureSafeCommandValue(value, fieldName);
+  }
+  return quoteTokenIfNeeded(value, true);
+}
+
+/**
+ * Build a database-qualified table identity (`database.table`) for MygramDB
+ * v1.7+ multi-database deployments.
+ *
+ * A single-database deployment continues to accept a bare table name, so an
+ * empty/omitted `database` returns just the validated table name. When a
+ * database is supplied, both parts are validated as identifiers and must not
+ * themselves contain a `.` separator; they are then joined as
+ * `database.table`.
+ *
+ * @param {string} table - Bare table name
+ * @param {string} [database] - Owning database (empty/omitted for single-db)
+ * @returns {string} `database.table`, or `table` when no database is given
+ * @throws {InputValidationError} When either part is empty, contains
+ *   whitespace/control characters, or embeds a `.` separator
+ *
+ * @example
+ * ```typescript
+ * qualifyTableIdentity('articles');             // 'articles'
+ * qualifyTableIdentity('articles', 'app_db');   // 'app_db.articles'
+ * ```
+ */
+export function qualifyTableIdentity(table: string, database?: string): string {
+  const safeTable = ensureSafeIdentifier(table, 'table');
+  if (database === undefined || database === '') {
+    return safeTable;
+  }
+  const safeDatabase = ensureSafeIdentifier(database, 'database');
+  if (safeDatabase.includes('.')) {
+    throw new InputValidationError("Input for database must not contain a '.' separator");
+  }
+  if (safeTable.includes('.')) {
+    throw new InputValidationError("Input for table must not contain a '.' when a database is supplied separately");
+  }
+  return `${safeDatabase}.${safeTable}`;
+}
+
+/**
+ * Split a (possibly database-qualified) table identity into its parts.
+ *
+ * Bare names return `{ database: null, table }`; qualified names are split on
+ * the first `.` so `app_db.articles` yields `{ database: 'app_db', table:
+ * 'articles' }`. The identity is validated as a protocol identifier first.
+ *
+ * @param {string} identity - `database.table` or a bare `table`
+ * @returns {{ database: string | null; table: string }} Parsed parts
+ * @throws {InputValidationError} When the identity is empty/unsafe or has an
+ *   empty database or table half
+ */
+export function parseTableIdentity(identity: string): { database: string | null; table: string } {
+  ensureSafeIdentifier(identity, 'table');
+  const dot = identity.indexOf('.');
+  if (dot === -1) {
+    return { database: null, table: identity };
+  }
+  const database = identity.slice(0, dot);
+  const table = identity.slice(dot + 1);
+  if (database === '' || table === '') {
+    throw new InputValidationError(`Invalid table identity "${identity}": expected <database>.<table>`);
+  }
+  return { database, table };
 }
 
 /**

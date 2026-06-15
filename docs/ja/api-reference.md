@@ -89,10 +89,14 @@ async search(
 ): Promise<SearchResponse>
 ```
 
-指定されたテーブル内のドキュメントを検索します。
+指定されたテーブル内のドキュメントを検索します。複数語のクエリは自動的に
+クォートされ、1つのフレーズトークンとしてサーバーへ送信されます。ブール
+（`AND`/`OR`/`NOT`/グループ化）式には [`searchRaw()`](#searchraw) を使用します。
 
 **パラメータ:**
-- `table` (string) - 検索対象のテーブル名
+- `table` (string) - 検索対象のテーブル名。MygramDB v1.7+ のマルチデータベース
+  構成では `database.table` 形式（例: `app_db.articles`）を指定します。単一
+  データベースのサーバーでは従来どおり bare な名前も使用できます。
 - `query` (string) - 検索クエリテキスト
 - `options` (SearchOptions, オプション) - 検索オプション
 
@@ -121,6 +125,9 @@ results.results.forEach((result) => {
   console.log(`ID: ${result.primaryKey}`);
 });
 ```
+
+`searchWithHighlights(table, query, options?)` は `HIGHLIGHT` 句を有効にした
+同等の呼び出しで、`result.snippet` にスニペットを返します。
 
 ### count()
 
@@ -154,6 +161,38 @@ const count = await client.count('articles', 'machine learning', {
 });
 console.log(`Total matches: ${count.count}`);
 ```
+
+### searchRaw()
+
+```typescript
+async searchRaw(
+  table: string,
+  rawQuery: string,
+  options?: SearchRawOptions
+): Promise<SearchResponse>
+```
+
+事前に組み立てたブール式で検索します（MygramDB v1.7+）。式は1つのクォート
+済みトークンとして送信され、サーバーの AST パーサーが `AND`/`OR`/`NOT`/括弧を
+解釈します。`search()` の AND/NOT 分解では表現できない OR・グループ化の意味を
+保持したい場合は、[`convertSearchExpression()`](#エクスポートされた関数) と
+組み合わせて使用します。
+
+**パラメータ:**
+- `table` (string) - テーブル名（bare または `database.table`）
+- `rawQuery` (string) - 事前に組み立てたブール式
+- `options` (SearchRawOptions, オプション) - `limit` / `offset` / `highlight`
+
+**戻り値:** SearchResponseに解決されるPromise
+
+**例:**
+```typescript
+const raw = convertSearchExpression('python OR (ruby AND rails)');
+const results = await client.searchRaw('articles', raw, { limit: 50 });
+```
+
+`searchRawWithHighlights(table, rawQuery, options?)` は `HIGHLIGHT` 句を有効に
+した同等の呼び出しで、`result.snippet` にスニペットを返します。
 
 ## ドキュメントメソッド
 
@@ -347,6 +386,69 @@ async disableDebug(): Promise<void>
 await client.disableDebug();
 ```
 
+## ランタイム変数メソッド（v1.7+）
+
+### setVariable()
+
+```typescript
+async setVariable(name: string, value: string): Promise<void>
+```
+
+ランタイム変数を設定します（MySQL 互換の `SET`）。空白を含む値は自動的に
+クォートされます。
+
+```typescript
+await client.setVariable('logging.level', 'info');
+```
+
+### showVariables()
+
+```typescript
+async showVariables(likePattern?: string): Promise<string>
+```
+
+ランタイム変数の一覧（`SHOW VARIABLES [LIKE <pattern>]`）をサーバーの生の
+レスポンス文字列として返します。
+
+```typescript
+const table = await client.showVariables('logging%');
+```
+
+## SYNC メソッド（v1.7+）
+
+### sync()
+
+```typescript
+async sync(table: string): Promise<string>
+```
+
+テーブルのオンデマンド全リロードを開始します（`SYNC <table>`）。bare または
+`database.table` 形式を受け付け、サーバーの確認応答で解決します。
+
+### syncStatus()
+
+```typescript
+async syncStatus(): Promise<string>
+```
+
+`SYNC STATUS` レポート（実行中・直近の SYNC 操作）をサーバーの生のレスポンス
+文字列として返します。
+
+### syncStop()
+
+```typescript
+async syncStop(table?: string): Promise<string>
+```
+
+実行中の SYNC を停止します。テーブルを指定しない場合はすべての実行中 SYNC を、
+指定した場合はそのテーブルの SYNC のみを停止します。
+
+```typescript
+await client.sync('app_db.articles');
+console.log(await client.syncStatus());
+await client.syncStop('app_db.articles');
+```
+
 ## 型定義
 
 ### ClientConfig
@@ -372,6 +474,16 @@ interface SearchOptions {
   filters?: Record<string, string>;  // フィルタ条件（カラム: 値）
   sortColumn?: string;               // ソートカラム（デフォルト: プライマリキー）
   sortDesc?: boolean;                // 降順ソート（デフォルト: true）
+}
+```
+
+### SearchRawOptions
+
+```typescript
+interface SearchRawOptions {
+  limit?: number;               // 最大結果数（デフォルト: 0 = サーバー既定値）
+  offset?: number;              // ページネーションオフセット（デフォルト: 0）
+  highlight?: HighlightOptions; // {} を渡すと既定設定でハイライト有効化
 }
 ```
 
@@ -502,3 +614,19 @@ class TimeoutError extends MygramError {
 ## エクスポートされた関数
 
 検索式のパースユーティリティについては、[検索式](./search-expression.md)を参照してください。
+
+### テーブル識別子ヘルパー（v1.7+）
+
+```typescript
+qualifyTableIdentity(table: string, database?: string): string
+parseTableIdentity(identity: string): { database: string | null; table: string }
+```
+
+`qualifyTableIdentity` は `database.table` 形式の識別子を組み立てます（database
+を指定しない場合は bare なテーブル名を返します）。`parseTableIdentity` は識別子を
+各パーツへ分解します。いずれも識別子を検証し、空白・制御文字を拒否します。
+
+```typescript
+qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
+parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
+```

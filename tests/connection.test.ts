@@ -344,18 +344,29 @@ describe('identifier whitespace validation', () => {
     await expect(client.search('articles', 'q', { filters: { 'bad key': 'v' } })).rejects.toThrow(InputValidationError);
     expect((socket.write as MockInstance).mock.calls.length).toBe(0);
 
-    // Filter value with whitespace: allowed (server parses unquoted values).
+    // Filter value with whitespace: allowed, and quoted so it stays a single
+    // token on the wire (matches the C++ client's EscapeQueryString).
     const promise = client.search('articles', 'q', { filters: { status: 'in progress' } });
     const command = (socket.write as MockInstance).mock.calls[0][0] as string;
-    expect(command).toContain('FILTER status = in progress');
+    expect(command).toContain('FILTER status = "in progress"');
     socket.emit('data', 'OK RESULTS 0\r\n');
     await promise;
   });
 
-  it('rejects dump filepaths with whitespace', async () => {
+  it('quotes dump filepaths with whitespace so they stay one token', async () => {
     const { client, socket } = createConnectedClient();
     await client.connect();
-    await expect(client.dumpSave('/tmp/has space.bin')).rejects.toThrow(InputValidationError);
+    const promise = client.dumpSave('/tmp/has space.bin');
+    const command = (socket.write as MockInstance).mock.calls[0][0] as string;
+    expect(command).toBe('DUMP SAVE "/tmp/has space.bin"\r\n');
+    socket.emit('data', 'OK DUMP_SAVED /tmp/has space.bin\r\n');
+    await promise;
+  });
+
+  it('rejects dump filepaths with control characters', async () => {
+    const { client, socket } = createConnectedClient();
+    await client.connect();
+    await expect(client.dumpSave('/tmp/bad\nname.bin')).rejects.toThrow(InputValidationError);
     expect((socket.write as MockInstance).mock.calls.length).toBe(0);
   });
 });
