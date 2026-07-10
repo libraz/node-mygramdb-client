@@ -5,11 +5,12 @@
  * Tests are skipped if the server is not available.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MygramClient } from '../src/client';
 import { createMygramClient, getClientType, isNativeAvailable } from '../src/client-factory';
-import { ProtocolError } from '../src/errors';
+import { PoolOverloadError, ProtocolError } from '../src/errors';
 import type { NativeMygramClient } from '../src/native-client';
+import { MygramPool } from '../src/pool';
 import { convertSearchExpression, simplifySearchExpression } from '../src/search-expression';
 
 const TEST_HOST = process.env.MYGRAM_HOST || '127.0.0.1';
@@ -24,6 +25,20 @@ const SEEDED = process.env.MYGRAM_E2E_SEEDED === '1';
 
 /** Common client interface for testing both implementations */
 type TestClient = MygramClient | NativeMygramClient;
+
+/**
+ * Poll `predicate` until it is truthy or the deadline passes. Used by the pool
+ * resilience tests to wait for out-of-band background reconnects without
+ * coupling to a fixed sleep.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000, stepMs = 25): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+}
 
 /**
  * Check if the MygramDB server is available
@@ -715,6 +730,14 @@ describe('Integration Tests', async () => {
         expect(ids(res)).toEqual(['2', '3']);
       });
 
+      it('searchRaw evaluates a nested OR group under AND', async () => {
+        // The expression is sent unquoted so the server parses the grouping;
+        // ruby ∩ (rails ∪ python) = {2}.
+        const res = await client.searchRaw(TABLE, 'ruby AND (rails OR python)');
+        expect(res.totalCount).toBe(1);
+        expect(ids(res)).toEqual(['2']);
+      });
+
       it('bare and qualified names resolve identically (single-database)', async () => {
         const qualified = await client.search('testdb.articles', 'python');
         const bare = await client.search('articles', 'python');
@@ -742,6 +765,186 @@ describe('Integration Tests', async () => {
         expect(res.totalCount).toBe(1);
         expect(res.results[0].snippet).toContain('<em>python</em>');
       });
+    });
+  });
+
+  describe.skipIf(!serverAvailable || !SEEDED)('connection pool (seeded dataset)', () => {
+    const TABLE = 'testdb.articles';
+    const POOL_SIZE = 12;
+    const BURST = 500;
+    let pool: MygramPool;
+
+    beforeAll(async () => {
+      pool = new MygramPool({
+        connection: { host: TEST_HOST, port: TEST_PORT, timeout: 15000 },
+        size: POOL_SIZE,
+        maxQueue: BURST * 2, // absorb the whole burst rather than shed it
+        queueTimeoutMs: 15000,
+        keepAliveIntervalMs: 0
+      });
+      await pool.start();
+    });
+
+    afterAll(async () => {
+      await pool.close();
+    });
+
+    it('starts every connection', () => {
+      const metrics = pool.metrics();
+      expect(metrics.totalConnections).toBe(POOL_SIZE);
+      expect(metrics.healthyConnections).toBe(POOL_SIZE);
+    });
+
+    it('sustains a burst of concurrent searches across the pool', async () => {
+      const responses = await Promise.all(Array.from({ length: BURST }, () => pool.search(TABLE, 'python')));
+
+      expect(responses).toHaveLength(BURST);
+      for (const res of responses) {
+        expect(res.totalCount).toBeGreaterThanOrEqual(0);
+      }
+
+      const metrics = pool.metrics();
+      expect(metrics.completed).toBeGreaterThanOrEqual(BURST);
+      expect(metrics.inFlight).toBe(0); // every slot released
+      expect(metrics.queueDepth).toBe(0);
+      expect(metrics.rejectedOverload).toBe(0); // queue was large enough
+      // Concurrency is bounded by the pool size, so latency stays measurable.
+      expect(metrics.latencyP99Ms).toBeGreaterThanOrEqual(metrics.latencyP50Ms);
+    });
+
+    it('mixes query types under load without cross-talk', async () => {
+      const [search, count, doc] = await Promise.all([
+        pool.search(TABLE, 'golang'),
+        pool.count(TABLE, 'golang'),
+        pool.get(TABLE, '1')
+      ]);
+
+      expect(search.totalCount).toBe(count.count);
+      expect(doc.primaryKey).toBe('1');
+    });
+
+    it('routes each distinct query to its own response under heavy concurrency', async () => {
+      // A burst of the SAME query cannot detect response misrouting - every
+      // answer is identical. This drives many DIFFERENT queries with known
+      // result sets, shuffled and fired concurrently, so a slot handing one
+      // caller another caller's response would fail the per-query assertion.
+      const cases: { q: string; ids: string[] }[] = [
+        { q: 'python', ids: ['3'] },
+        { q: 'ruby', ids: ['2'] },
+        { q: 'golang', ids: ['4'] },
+        { q: 'rails', ids: ['2'] },
+        { q: 'programming', ids: ['2'] },
+        { q: 'tutorial', ids: ['4'] },
+        { q: 'basics', ids: ['3'] },
+        { q: 'machine learning', ids: ['3'] },
+        { q: '機械学習', ids: ['1', '5'] }
+      ];
+
+      const jobs = Array.from({ length: 360 }, (_, i) => cases[i % cases.length]);
+      for (let i = jobs.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [jobs[i], jobs[j]] = [jobs[j], jobs[i]];
+      }
+
+      const responses = await Promise.all(jobs.map((job) => pool.search(TABLE, job.q).then((res) => ({ job, res }))));
+
+      for (const { job, res } of responses) {
+        const expected = [...job.ids].sort();
+        expect(res.results.map((d) => d.primaryKey).sort()).toEqual(expected);
+        expect(res.totalCount).toBe(job.ids.length);
+      }
+    });
+
+    it('runs administrative commands through withClient', async () => {
+      const info = await pool.withClient((client) => client.info(), { idempotent: true });
+      expect(info.version).toMatch(/^MygramDB/);
+    });
+  });
+
+  describe.skipIf(!serverAvailable || !SEEDED)('connection pool resilience (seeded dataset)', () => {
+    const TABLE = 'testdb.articles';
+
+    it('heals after every pooled connection is dropped underneath it', async () => {
+      // Models a server restart / network blip: the sockets die while the pool
+      // still believes them healthy. The pool must notice on next use, retire
+      // the dead slots, reconnect out of band, and resume serving correct data.
+      const pool = new MygramPool({
+        connection: { host: TEST_HOST, port: TEST_PORT, timeout: 15000 },
+        size: 4,
+        readRetries: 2,
+        reconnectBackoffMs: [50, 250],
+        queueTimeoutMs: 15000,
+        keepAliveIntervalMs: 0
+      });
+      await pool.start();
+
+      try {
+        expect(pool.metrics().healthyConnections).toBe(4);
+
+        // Destroy every live socket out from under the pool.
+        const slots = (pool as unknown as { slots: { client: { disconnect(): void } }[] }).slots;
+        for (const slot of slots) {
+          slot.client.disconnect();
+        }
+
+        // The first commands hit dead sockets; retries and background reconnects
+        // absorb the disruption. Transient failures during recovery are expected.
+        await Promise.allSettled(Array.from({ length: 8 }, () => pool.search(TABLE, 'python')));
+
+        // Background reconnects heal every slot.
+        await waitFor(() => pool.metrics().healthyConnections === 4);
+        expect(pool.metrics().reconnects).toBeGreaterThanOrEqual(4);
+
+        // Once healed the pool returns correct results again.
+        const res = await pool.search(TABLE, 'python');
+        expect(res.totalCount).toBe(1);
+        expect(res.results.map((d) => d.primaryKey)).toEqual(['3']);
+      } finally {
+        await pool.close();
+      }
+    });
+  });
+
+  describe.skipIf(!serverAvailable || !SEEDED)('connection pool backpressure (seeded dataset)', () => {
+    const TABLE = 'testdb.articles';
+
+    it('sheds excess callers with PoolOverloadError while saturated', async () => {
+      // size 1 + maxQueue 1: at most one in-flight command and one queued
+      // waiter, so a concurrent burst beyond that is shed immediately rather
+      // than buffered without bound.
+      const pool = new MygramPool({
+        connection: { host: TEST_HOST, port: TEST_PORT, timeout: 15000 },
+        size: 1,
+        maxQueue: 1,
+        queueTimeoutMs: 15000,
+        keepAliveIntervalMs: 0
+      });
+      await pool.start();
+
+      try {
+        const results = await Promise.allSettled(Array.from({ length: 8 }, () => pool.search(TABLE, 'python')));
+
+        const rejected = results.filter((r) => r.status === 'rejected');
+        expect(rejected.length).toBeGreaterThan(0);
+        for (const r of rejected) {
+          expect((r as PromiseRejectedResult).reason).toBeInstanceOf(PoolOverloadError);
+        }
+        expect(pool.metrics().rejectedOverload).toBeGreaterThan(0);
+
+        // The calls that were admitted (the slot + the single queued waiter)
+        // still returned correct data, proving shedding does not corrupt the
+        // ones that got through.
+        const fulfilled = results.filter(
+          (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof pool.search>>> => r.status === 'fulfilled'
+        );
+        expect(fulfilled.length).toBeGreaterThanOrEqual(2);
+        for (const r of fulfilled) {
+          expect(r.value.totalCount).toBe(1);
+          expect(r.value.results.map((d) => d.primaryKey)).toEqual(['3']);
+        }
+      } finally {
+        await pool.close();
+      }
     });
   });
 

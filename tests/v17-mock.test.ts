@@ -227,15 +227,47 @@ describe('MygramClient v1.7 searchRaw (boolean expressions)', () => {
     vi.restoreAllMocks();
   });
 
-  it('quotes a boolean expression as a single token', async () => {
+  it('sends a boolean expression verbatim (unquoted) so the server parses operators', async () => {
     const { client, socket } = createConnectedClient();
     await client.connect();
     const promise = client.searchRaw('articles', 'python OR (ruby AND rails)', { limit: 50 });
     const command = lastCommand(socket);
-    expect(command).toContain('SEARCH articles "python OR (ruby AND rails)"');
+    // Unquoted: a quoted phrase embedding AND/OR/NOT would be treated as a
+    // literal phrase by the server (MygramDB v1.8+).
+    expect(command).toContain('SEARCH articles python OR (ruby AND rails)');
+    expect(command).not.toContain('"python OR (ruby AND rails)"');
     expect(command.trimEnd()).toMatch(/LIMIT 50$/);
     socket.emit('data', 'OK RESULTS 0\r\n');
     await promise;
+  });
+
+  it('sends a nested boolean grouping verbatim', async () => {
+    // The exact shape MygramDB 1.8.0 fixed: a nested OR group under AND must
+    // reach the parser unquoted to be detected as boolean.
+    const { client, socket } = createConnectedClient();
+    await client.connect();
+    const promise = client.searchRaw('articles', 'alpha AND (xqz OR jkv)');
+    expect(lastCommand(socket)).toContain('SEARCH articles alpha AND (xqz OR jkv)');
+    socket.emit('data', 'OK RESULTS 0\r\n');
+    await promise;
+  });
+
+  it('preserves an embedded quoted phrase inside a raw expression', async () => {
+    const { client, socket } = createConnectedClient();
+    await client.connect();
+    const promise = client.searchRaw('articles', '"machine learning" OR python');
+    // Embedded quotes pass through verbatim so the server handles the phrase.
+    expect(lastCommand(socket)).toContain('SEARCH articles "machine learning" OR python');
+    socket.emit('data', 'OK RESULTS 0\r\n');
+    await promise;
+  });
+
+  it('rejects a raw expression containing control characters before sending', async () => {
+    const { client, socket } = createConnectedClient();
+    await client.connect();
+    // A verbatim send must still block CRLF injection into the command stream.
+    await expect(client.searchRaw('articles', 'a OR b\r\nINFO')).rejects.toThrow(InputValidationError);
+    expect((socket.write as MockInstance).mock.calls.length).toBe(0);
   });
 
   it('emits a bare OFFSET when only offset is set', async () => {
@@ -377,7 +409,8 @@ describe('NativeMygramClient v1.7 parity', () => {
     await client.connect();
     await client.searchRaw('app_db.articles', 'a OR b', { limit: 10 });
     const command = native.sendCommand.mock.calls[0][1] as string;
-    expect(command).toContain('SEARCH app_db.articles "a OR b"');
+    expect(command).toContain('SEARCH app_db.articles a OR b');
+    expect(command).not.toContain('"a OR b"');
     expect(command).toContain('LIMIT 10');
   });
 

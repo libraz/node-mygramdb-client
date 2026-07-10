@@ -365,6 +365,20 @@ describe('MygramClient.facet', () => {
     expect(resp.results).toEqual([{ value: 'Machine Learning', count: 42 }]);
   });
 
+  it('keeps a value that starts with # (tab-bearing data row, not a comment)', async () => {
+    // A facet value may legitimately start with '#' (e.g. a hashtag). Only
+    // tab-less '#' lines are comments (MygramDB v1.8+).
+    const { client, socket } = createConnectedClient();
+    await client.connect();
+    const promise = client.facet('articles', 'tag');
+    socket.emit('data', 'OK FACET 2\r\n#machinelearning\t9\r\n# query_time_ms: 1.2\r\n#ai\t4\r\n\r\n');
+    const resp = await promise;
+    expect(resp.results).toEqual([
+      { value: '#machinelearning', count: 9 },
+      { value: '#ai', count: 4 }
+    ]);
+  });
+
   it('throws ProtocolError on malformed FACET row', async () => {
     const { client, socket } = createConnectedClient();
     await client.connect();
