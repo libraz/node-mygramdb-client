@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ConnectionError, InputValidationError, MygramError, ProtocolError, TimeoutError } from '../src/errors';
+import {
+  CircuitOpenError,
+  ConnectionError,
+  InputValidationError,
+  MygramError,
+  ProtocolError,
+  TimeoutError
+} from '../src/errors';
 
 describe('Error classes', () => {
   it('MygramError should have correct name and message', () => {
@@ -44,5 +51,14 @@ describe('Error classes', () => {
     expect(error).toBeInstanceOf(Error);
     expect(error).toBeInstanceOf(MygramError);
     expect(error).toBeInstanceOf(InputValidationError);
+  });
+
+  it('CircuitOpenError should have correct prototype chain', () => {
+    const error = new CircuitOpenError('circuit open');
+    expect(error.name).toBe('CircuitOpenError');
+    expect(error.message).toBe('circuit open');
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(MygramError);
+    expect(error).toBeInstanceOf(CircuitOpenError);
   });
 });

@@ -10,9 +10,27 @@
 export { MygramClient } from './client.js';
 export { createMygramClient, getClientType, isNativeAvailable, simplifySearchExpression } from './client-factory.js';
 export { parseTableIdentity, qualifyTableIdentity } from './command-utils.js';
-export { ConnectionError, InputValidationError, MygramError, ProtocolError, TimeoutError } from './errors.js';
+export {
+  CircuitOpenError,
+  ConnectionError,
+  InputValidationError,
+  MygramError,
+  PoolOverloadError,
+  ProtocolError,
+  TimeoutError
+} from './errors.js';
 export type { SimplifiedExpression } from './native-client.js';
 export { NativeMygramClient } from './native-client.js';
+export type {
+  CircuitBreakerConfig,
+  CircuitState,
+  MygramPoolConfig,
+  PoolEvent,
+  PooledClient,
+  PooledClientFactory,
+  PoolMetrics
+} from './pool.js';
+export { MygramPool } from './pool.js';
 export type { SearchExpression } from './search-expression.js';
 export {
   convertSearchExpression,

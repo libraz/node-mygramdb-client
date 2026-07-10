@@ -96,3 +96,45 @@ export class InputValidationError extends MygramError {
     Object.setPrototypeOf(this, InputValidationError.prototype);
   }
 }
+
+/**
+ * Load-shedding error thrown by the connection pool when the wait queue is
+ * full. Signals that the client should back off (e.g. return HTTP 503) rather
+ * than keep enqueuing work the pool cannot absorb.
+ *
+ * @class
+ * @extends MygramError
+ */
+export class PoolOverloadError extends MygramError {
+  /**
+   * Create a pool-overload error
+   *
+   * @param {string} message - Error message
+   */
+  constructor(message: string) {
+    super(message);
+    this.name = 'PoolOverloadError';
+    Object.setPrototypeOf(this, PoolOverloadError.prototype);
+  }
+}
+
+/**
+ * Circuit-open error thrown by the connection pool when its circuit breaker is
+ * open (or half-open with a trial already in flight). Signals that the pool is
+ * failing fast to protect an unreachable server, rather than acquiring a slot.
+ *
+ * @class
+ * @extends MygramError
+ */
+export class CircuitOpenError extends MygramError {
+  /**
+   * Create a circuit-open error
+   *
+   * @param {string} message - Error message
+   */
+  constructor(message: string) {
+    super(message);
+    this.name = 'CircuitOpenError';
+    Object.setPrototypeOf(this, CircuitOpenError.prototype);
+  }
+}
