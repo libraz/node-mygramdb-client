@@ -1,90 +1,182 @@
 # Advanced Usage
 
-This guide covers advanced usage patterns and best practices for mygram-client.
+This guide covers advanced usage patterns and best practices for mygramdb-client.
 
 ## Connection Pooling
 
-For high-performance applications, implement connection pooling to reuse connections:
+A single `MygramClient` owns one socket and serializes every command through a
+FIFO queue, so one connection tops out at roughly `1 / RTT` requests per second.
+To sustain hundreds of requests per second from a single Node process, use the
+built-in `MygramPool`, which fans requests across N connections and keeps up to
+N commands in flight concurrently.
 
 ```typescript
-import { MygramClient, ClientConfig } from 'mygram-client';
+import { MygramPool } from 'mygramdb-client';
 
-class MygramPool {
-  private clients: MygramClient[] = [];
-  private available: MygramClient[] = [];
-  private pending: ((client: MygramClient) => void)[] = [];
+const pool = new MygramPool({
+  connection: { host: 'localhost', port: 11016 },
+  size: 12
+});
 
-  constructor(
-    private config: ClientConfig,
-    private poolSize: number = 10
-  ) {}
+// start() is optional: it warms every connection up front for fail-fast
+// startup. Omit it and the first query starts the pool lazily (like pg.Pool).
+await pool.start();
 
-  async init(): Promise<void> {
-    for (let i = 0; i < this.poolSize; i++) {
-      const client = new MygramClient(this.config);
-      await client.connect();
-      this.clients.push(client);
-      this.available.push(client);
-    }
-  }
+// The pool exposes the query surface directly; connection borrow/return is
+// handled internally and load-balanced across the pool.
+const results = await pool.search('articles', 'test', { limit: 100 });
+console.log(results);
 
-  async acquire(): Promise<MygramClient> {
-    if (this.available.length > 0) {
-      return this.available.pop()!;
-    }
+// Inspect health and load at any time.
+console.log(pool.metrics());
 
-    // Wait for a client to become available
-    return new Promise((resolve) => {
-      this.pending.push(resolve);
-    });
-  }
-
-  release(client: MygramClient): void {
-    if (this.pending.length > 0) {
-      const resolve = this.pending.shift()!;
-      resolve(client);
-    } else {
-      this.available.push(client);
-    }
-  }
-
-  async close(): Promise<void> {
-    this.clients.forEach((client) => client.disconnect());
-    this.clients = [];
-    this.available = [];
-  }
-
-  getStats() {
-    return {
-      total: this.clients.length,
-      available: this.available.length,
-      inUse: this.clients.length - this.available.length,
-      pending: this.pending.length,
-    };
-  }
-}
-
-// Usage
-const pool = new MygramPool(
-  { host: 'localhost', port: 11016 },
-  10
-);
-
-await pool.init();
-
-const client = await pool.acquire();
-try {
-  const results = await client.search('articles', 'test');
-  console.log(results);
-} finally {
-  pool.release(client);
-}
-
-// Check pool statistics
-console.log(pool.getStats());
-
-// Cleanup
+// close() tears the pool down; end() is an alias (pg / mysql2 convention).
 await pool.close();
+```
+
+### Sizing the pool
+
+Each slot handles at most one in-flight command, so the pool size is the
+effective maximum concurrency. Size it with Little's law:
+
+```
+size ≈ targetThroughput(req/s) × p95RTT(s)
+```
+
+Then add headroom (about 3x) for RTT variance and spikes. For example, to reach
+500 req/s over a LAN with a 5 ms p95 RTT, `500 × 0.005 = 2.5`, so a pool of
+**8–12** connections comfortably absorbs the load. Measure your real p95 RTT
+before committing to a number, and prefer the pure-JavaScript transport
+(`forceJavaScript: true`, the default) for high concurrency — the native
+binding's `sendCommand` is synchronous and blocks the event loop for the whole
+round trip.
+
+### Backpressure and resilience
+
+`MygramPool` is built for overload conditions:
+
+- **Load shedding.** When every slot is busy, callers wait in a bounded queue
+  (`maxQueue`). Once the queue is full, further calls reject immediately with
+  `PoolOverloadError` instead of growing memory without bound — translate this
+  into an HTTP 503 with `Retry-After` at your edge.
+- **Queue deadline.** A caller waiting for a free slot is bounded by
+  `queueTimeoutMs`, so real wait time never runs away.
+- **Self-healing.** A connection that fails is retired and reconnected out of
+  band with exponential backoff while the other slots keep serving. Idempotent
+  reads (`search`, `count`, `get`, `facet`) are retried once on another slot
+  after a `ConnectionError`. Background errors that never reach a caller
+  (reconnect failures, keep-alive retirements) surface through `onError`.
+
+```typescript
+const pool = new MygramPool({
+  connection: { host: 'localhost', port: 11016, timeout: 3000 },
+  size: 12,
+  maxQueue: 96, // reject beyond this to shed load fast
+  queueTimeoutMs: 3000, // cap real wait time
+  readRetries: 1, // retry idempotent reads once on another slot
+  reconnectBackoffMs: [100, 5000],
+  onMetrics: (m) => console.log('pool', m),
+  metricsIntervalMs: 5000,
+  onError: (err) => console.error('pool background error', err) // otherwise swallowed
+});
+
+try {
+  await pool.search('articles', 'test');
+} catch (error) {
+  if (error instanceof PoolOverloadError) {
+    // Backpressure: shed this request (e.g. respond 503).
+  }
+}
+```
+
+For administrative commands that the pool does not expose directly, borrow a
+client through `withClient`:
+
+```typescript
+const info = await pool.withClient((client) => client.info(), { idempotent: true });
+```
+
+### Circuit breaker
+
+Set `circuitBreaker` to make the pool fail fast when the server becomes
+unreachable instead of retrying into it. The breaker sits **outside** the
+read-retry loop, so once it is open a call throws `CircuitOpenError` before a
+slot is even acquired. Omit `circuitBreaker` to disable it.
+
+- **Closed** (normal): calls run as usual. Each `ConnectionError` /
+  `TimeoutError` increments a counter; `failureThreshold` consecutive network
+  failures (default 5) trip the breaker **open**.
+- **Open**: every call fails fast with `CircuitOpenError`. After
+  `resetTimeoutMs` (default 10000) the next call is admitted as a single
+  **half-open** trial.
+- **Half-open**: one trial call is allowed; its success closes the breaker, its
+  failure reopens it. Concurrent calls during the trial also fail fast.
+
+Only `ConnectionError` and `TimeoutError` trip the breaker. A `ProtocolError`
+(a reachable server rejecting the query) or a `PoolOverloadError` (local
+backpressure) leaves it closed.
+
+```typescript
+import { MygramPool, CircuitOpenError } from 'mygramdb-client';
+
+const pool = new MygramPool({
+  connection: { host: 'localhost', port: 11016 },
+  circuitBreaker: { failureThreshold: 5, resetTimeoutMs: 10000 }
+});
+
+try {
+  await pool.search('articles', 'test');
+} catch (error) {
+  if (error instanceof CircuitOpenError) {
+    // Server is unreachable; the breaker is shedding load. Back off.
+  }
+}
+```
+
+### Pool events
+
+`onEvent` delivers discrete lifecycle events. It coexists with the periodic
+`onMetrics` snapshot and the background-error `onError` sink. Four `PoolEvent`
+values are emitted:
+
+- `acquire` — a slot was handed to a caller; payload `{ waitMs }` (`0` when a
+  slot was free immediately).
+- `retry` — an idempotent read was retried on another slot; payload
+  `{ attempt, error }`.
+- `connection_discarded` — a dead slot was retired for background reconnection;
+  empty payload.
+- `breaker_state_change` — the circuit breaker changed state; payload
+  `{ state }` (`'closed' | 'open' | 'half-open'`).
+
+An `onEvent` callback that throws is swallowed, so instrumentation cannot
+disrupt the pool.
+
+```typescript
+const pool = new MygramPool({
+  connection: { host: 'localhost', port: 11016 },
+  circuitBreaker: {},
+  onEvent: (event, payload) => {
+    console.log('pool event', event, payload);
+  }
+});
+```
+
+## Client Auto-Reconnect
+
+For a standalone `MygramClient` (not the pool), set `autoReconnect` on the
+`ClientConfig` to recover from a socket that died while idle. When enabled, the
+client reconnects once and resends the command **only** if the socket is found
+dead *before* the command is written to the wire. A failure that happens *after*
+the write surfaces as a `ConnectionError` without resending, since the command
+may already have been applied server-side. This applies to the pure-JavaScript
+transport only — the native binding does not implement it. Default: `false`.
+
+```typescript
+const client = new MygramClient({
+  host: 'localhost',
+  port: 11016,
+  autoReconnect: true // reconnect-and-resend once on a pre-write dead socket
+});
 ```
 
 ## Batch Operations
@@ -92,7 +184,7 @@ await pool.close();
 Process multiple queries efficiently:
 
 ```typescript
-import { MygramClient, SearchResponse } from 'mygram-client';
+import { MygramClient, SearchResponse } from 'mygramdb-client';
 
 async function batchSearch(
   client: MygramClient,
@@ -124,7 +216,8 @@ results.forEach((result, index) => {
 
 ## Parallel Processing with Pool
 
-Combine connection pooling with parallel processing:
+Fire many queries concurrently and let the pool bound the real concurrency to
+its size — surplus calls wait in the queue automatically:
 
 ```typescript
 async function parallelSearch(
@@ -132,16 +225,7 @@ async function parallelSearch(
   table: string,
   queries: string[]
 ): Promise<SearchResponse[]> {
-  return Promise.all(
-    queries.map(async (query) => {
-      const client = await pool.acquire();
-      try {
-        return await client.search(table, query);
-      } finally {
-        pool.release(client);
-      }
-    })
-  );
+  return Promise.all(queries.map((query) => pool.search(table, query)));
 }
 
 // Usage
@@ -160,7 +244,7 @@ const results = await parallelSearch(pool, 'articles', [
 Implement health checks for monitoring:
 
 ```typescript
-import { MygramClient } from 'mygram-client';
+import { MygramClient } from 'mygramdb-client';
 
 interface HealthCheckResult {
   healthy: boolean;
@@ -213,7 +297,7 @@ if (health.healthy) {
 Implement automatic retry for transient failures:
 
 ```typescript
-import { MygramClient, TimeoutError, ConnectionError } from 'mygram-client';
+import { MygramClient, TimeoutError, ConnectionError } from 'mygramdb-client';
 
 async function searchWithRetry(
   client: MygramClient,
@@ -265,7 +349,7 @@ const results = await searchWithRetry(client, 'articles', 'test', 3, 1000);
 Track and analyze query performance:
 
 ```typescript
-import { MygramClient, SearchResponse } from 'mygram-client';
+import { MygramClient, SearchResponse } from 'mygramdb-client';
 
 class PerformanceMonitor {
   private stats: Map<string, { count: number; totalMs: number; minMs: number; maxMs: number }> = new Map();
@@ -350,7 +434,7 @@ console.log(`Min: ${stats?.minMs}ms, Max: ${stats?.maxMs}ms`);
 Implement a caching layer for frequently accessed data:
 
 ```typescript
-import { MygramClient, SearchResponse } from 'mygram-client';
+import { MygramClient, SearchResponse } from 'mygramdb-client';
 
 class CachedMygramClient {
   private cache: Map<string, { data: SearchResponse; timestamp: number }> = new Map();
@@ -414,7 +498,7 @@ const results3 = await cachedClient.search('articles', 'golang', false);
 Implement pagination for large result sets:
 
 ```typescript
-import { MygramClient, SearchResponse } from 'mygram-client';
+import { MygramClient, SearchResponse } from 'mygramdb-client';
 
 class PaginatedSearch {
   constructor(
@@ -479,7 +563,7 @@ import {
   ConnectionError,
   ProtocolError,
   TimeoutError,
-} from 'mygram-client';
+} from 'mygramdb-client';
 
 class ResilientClient {
   private reconnectAttempts = 0;
@@ -546,7 +630,7 @@ const results = await resilient.search('articles', 'test');
 Distribute queries across multiple servers:
 
 ```typescript
-import { MygramClient, ClientConfig } from 'mygram-client';
+import { MygramClient, ClientConfig } from 'mygramdb-client';
 
 class LoadBalancedClient {
   private clients: MygramClient[] = [];
@@ -600,11 +684,11 @@ await loadBalancer.close();
 ### 1. Always Use Connection Pooling in Production
 
 ```typescript
-// Good
-const pool = new MygramPool(config, 10);
-await pool.init();
+// Good - fans requests across N connections
+const pool = new MygramPool({ connection: config, size: 12 });
+await pool.start();
 
-// Bad - creates new connection for each request
+// Bad - a single connection serializes every command through one socket
 const client = new MygramClient(config);
 await client.connect();
 ```

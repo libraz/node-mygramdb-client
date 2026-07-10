@@ -1,6 +1,6 @@
-# mygram-client の始め方
+# mygramdb-client の始め方
 
-このガイドでは、Node.js 用の mygram-client ライブラリの使い方を説明します。
+このガイドでは、Node.js 用の mygramdb-client ライブラリの使い方を説明します。
 
 ## 前提条件
 
@@ -13,13 +13,13 @@
 ### Yarn を使用（推奨）
 
 ```bash
-yarn add mygram-client
+yarn add mygramdb-client
 ```
 
 ### npm を使用
 
 ```bash
-npm install mygram-client
+npm install mygramdb-client
 ```
 
 ## 基本設定
@@ -27,7 +27,7 @@ npm install mygram-client
 ### 1. クライアントをインポート
 
 ```typescript
-import { MygramClient } from 'mygram-client';
+import { MygramClient } from 'mygramdb-client';
 ```
 
 ### 2. クライアントインスタンスを作成
@@ -71,7 +71,7 @@ await client.disconnect();
 ## 完全な例
 
 ```typescript
-import { MygramClient } from 'mygram-client';
+import { MygramClient } from 'mygramdb-client';
 
 async function main() {
   const client = new MygramClient({
@@ -132,7 +132,7 @@ const client = new MygramClient({
 ライブラリは、さまざまな失敗シナリオに対して特定のエラータイプを提供します：
 
 ```typescript
-import { MygramClient, ConnectionError, ProtocolError, TimeoutError } from 'mygram-client';
+import { MygramClient, ConnectionError, ProtocolError, TimeoutError } from 'mygramdb-client';
 
 try {
   await client.connect();
@@ -161,7 +161,7 @@ try {
 このライブラリは TypeScript で書かれており、完全な型定義を提供します。TypeScript ユーザーは自動的に型チェックと IntelliSense サポートを利用できます：
 
 ```typescript
-import type { ClientConfig, SearchResponse, SearchOptions } from 'mygram-client';
+import type { ClientConfig, SearchResponse, SearchOptions } from 'mygramdb-client';
 
 const config: ClientConfig = {
   host: 'localhost',

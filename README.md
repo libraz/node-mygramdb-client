@@ -25,6 +25,8 @@ MygramDB provides **25-200x faster** full-text search than MySQL FULLTEXT. This 
 - **Dual Implementation** — Optional C++ native bindings with automatic JavaScript fallback
 - **Search Expression Parser** — Web-style search syntax (+required, -excluded, "phrase", OR, grouping)
 - **Full Protocol Support** — All MygramDB commands (SEARCH, COUNT, GET, INFO, etc.)
+- **Connection Pool** — Built-in `MygramPool` for hundreds of req/s, with backpressure, load shedding, self-healing reconnects, and an optional circuit breaker
+- **Resilience** — Pool circuit breaker (fail fast when the server is unreachable) and standalone-client `autoReconnect`
 - **Type Safety** — Full TypeScript definitions
 - **Promise-based API** — Modern async/await interface
 
@@ -64,6 +66,32 @@ const doc = await client.get('articles', '12345');
 
 client.disconnect();
 ```
+
+### Connection Pooling
+
+A single client serializes every command through one socket. For high
+throughput (hundreds of req/s), use the built-in `MygramPool`, which fans
+requests across N connections with backpressure and self-healing reconnects:
+
+```typescript
+import { MygramPool } from 'mygramdb-client';
+
+const pool = new MygramPool({ connection: { host: 'localhost' }, size: 12 });
+await pool.start(); // optional warm-up; the first query starts the pool lazily
+
+const results = await pool.search('articles', 'hello', { limit: 100 });
+console.log(pool.metrics());
+
+await pool.close();
+```
+
+Add `circuitBreaker` to make the pool fail fast with `CircuitOpenError` when the
+server is unreachable, and `onEvent` for discrete lifecycle events. A standalone
+`MygramClient` can set `autoReconnect` to reconnect-and-resend once on a
+pre-write dead socket. See
+[Connection Pooling](docs/en/advanced-usage.md#connection-pooling) for sizing
+guidance and [Circuit breaker](docs/en/advanced-usage.md#circuit-breaker) for
+the resilience features.
 
 ## Search Expressions
 
@@ -182,6 +210,10 @@ import { convertSearchExpression } from 'mygramdb-client';
 const raw = convertSearchExpression('python OR (ruby AND rails)');
 const res = await client.searchRaw('articles', raw, { limit: 50 });
 ```
+
+`searchRaw()` sends the expression verbatim (unquoted) so the server's boolean
+parser interprets `AND`/`OR`/`NOT`/grouping; a quoted phrase embedding those
+keywords is treated as a literal (MygramDB v1.8+).
 
 ### Runtime variables and on-demand sync
 

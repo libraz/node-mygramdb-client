@@ -45,6 +45,28 @@ const doc = await client.get('articles', '12345');
 client.disconnect();
 ```
 
+### Connection pooling
+
+For high-throughput services, `MygramPool` spreads load across a fixed set of
+connections with backpressure and self-healing reconnects:
+
+```typescript
+import { MygramPool } from 'mygramdb-client';
+
+const pool = new MygramPool({ connection: { host: 'localhost', port: 11016 }, size: 8 });
+
+// No explicit start needed — the first query opens the pool lazily.
+const results = await pool.search('articles', 'hello');
+
+await pool.close(); // graceful teardown (alias: end())
+```
+
+Add `circuitBreaker` to fail fast with `CircuitOpenError` when the server is
+unreachable; a standalone `MygramClient` can set `autoReconnect` to
+reconnect-and-resend once on a pre-write dead socket. See the
+[full documentation](https://github.com/libraz/node-mygramdb-client) for the
+resilience features.
+
 ### TypeScript
 
 Full type definitions are included:

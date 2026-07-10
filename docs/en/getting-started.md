@@ -1,6 +1,6 @@
-# Getting Started with mygram-client
+# Getting Started with mygramdb-client
 
-This guide will help you get started with the mygram-client library for Node.js.
+This guide will help you get started with the mygramdb-client library for Node.js.
 
 ## Prerequisites
 
@@ -13,13 +13,13 @@ This guide will help you get started with the mygram-client library for Node.js.
 ### Using Yarn (recommended)
 
 ```bash
-yarn add mygram-client
+yarn add mygramdb-client
 ```
 
 ### Using npm
 
 ```bash
-npm install mygram-client
+npm install mygramdb-client
 ```
 
 ## Basic Setup
@@ -27,7 +27,7 @@ npm install mygram-client
 ### 1. Import the Client
 
 ```typescript
-import { MygramClient } from 'mygram-client';
+import { MygramClient } from 'mygramdb-client';
 ```
 
 ### 2. Create a Client Instance
@@ -71,7 +71,7 @@ await client.disconnect();
 ## Complete Example
 
 ```typescript
-import { MygramClient } from 'mygram-client';
+import { MygramClient } from 'mygramdb-client';
 
 async function main() {
   const client = new MygramClient({
@@ -132,7 +132,7 @@ const client = new MygramClient({
 The library provides specific error types for different failure scenarios:
 
 ```typescript
-import { MygramClient, ConnectionError, ProtocolError, TimeoutError } from 'mygram-client';
+import { MygramClient, ConnectionError, ProtocolError, TimeoutError } from 'mygramdb-client';
 
 try {
   await client.connect();
@@ -161,7 +161,7 @@ try {
 The library is written in TypeScript and provides full type definitions. TypeScript users get automatic type checking and IntelliSense support:
 
 ```typescript
-import type { ClientConfig, SearchResponse, SearchOptions } from 'mygram-client';
+import type { ClientConfig, SearchResponse, SearchOptions } from 'mygramdb-client';
 
 const config: ClientConfig = {
   host: 'localhost',

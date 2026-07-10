@@ -1,6 +1,6 @@
 # Search Expression Parser
 
-The mygram-client library includes a powerful search expression parser that converts web-style search syntax into MygramDB queries.
+The mygramdb-client library includes a powerful search expression parser that converts web-style search syntax into MygramDB queries.
 
 ## Overview
 
@@ -111,15 +111,15 @@ Parses a web-style search expression into structured format.
 
 **Example:**
 ```typescript
-import { parseSearchExpression } from 'mygram-client';
+import { parseSearchExpression } from 'mygramdb-client';
 
 const parsed = parseSearchExpression('+golang -old (tutorial OR guide)');
 console.log(parsed);
 // {
 //   requiredTerms: ['golang'],
 //   excludedTerms: ['old'],
-//   optionalTerms: [],
-//   orGroups: [['tutorial', 'guide']]
+//   optionalTerms: ['tutorial', 'guide'],
+//   rawExpression: '+golang -old (tutorial OR guide)'
 // }
 ```
 
@@ -138,7 +138,7 @@ Converts a web-style search expression into MygramDB query format.
 
 **Example:**
 ```typescript
-import { convertSearchExpression } from 'mygram-client';
+import { convertSearchExpression } from 'mygramdb-client';
 
 convertSearchExpression('golang tutorial');
 // Returns: 'golang OR tutorial'
@@ -175,7 +175,7 @@ Simplifies a search expression into basic terms that can be used with the client
 
 **Example:**
 ```typescript
-import { simplifySearchExpression } from 'mygram-client';
+import { simplifySearchExpression } from 'mygramdb-client';
 
 const { mainTerm, andTerms, notTerms } = simplifySearchExpression('+golang tutorial -old -deprecated');
 console.log(mainTerm);  // 'golang'
@@ -198,7 +198,7 @@ Checks if the expression contains complex syntax (OR, grouping) that cannot be s
 
 **Example:**
 ```typescript
-import { hasComplexExpression } from 'mygram-client';
+import { hasComplexExpression } from 'mygramdb-client';
 
 hasComplexExpression('+golang tutorial -old');
 // Returns: false (simple expression)
@@ -210,6 +210,31 @@ hasComplexExpression('+(tutorial OR guide)');
 // Returns: true (has grouping)
 ```
 
+### toQueryString()
+
+```typescript
+function toQueryString(expr: SearchExpression): string
+```
+
+Builds a MygramDB query string from an already-parsed `SearchExpression`. This is
+the lower-level step that `convertSearchExpression()` performs after parsing;
+call it directly when you already hold a `SearchExpression` from
+`parseSearchExpression()`.
+
+**Parameters:**
+- `expr` (SearchExpression) - A parsed expression
+
+**Returns:** MygramDB query string
+
+**Example:**
+```typescript
+import { parseSearchExpression, toQueryString } from 'mygramdb-client';
+
+const expr = parseSearchExpression('+golang -old');
+toQueryString(expr);
+// Returns: 'golang AND NOT old'
+```
+
 ## Usage with Client
 
 ### Simple Expressions
@@ -217,7 +242,7 @@ hasComplexExpression('+(tutorial OR guide)');
 For simple expressions without OR operators or grouping, use `simplifySearchExpression()` to extract terms:
 
 ```typescript
-import { MygramClient, simplifySearchExpression } from 'mygram-client';
+import { MygramClient, simplifySearchExpression } from 'mygramdb-client';
 
 const client = new MygramClient();
 await client.connect();
@@ -239,7 +264,7 @@ const results = await client.search('articles', mainTerm, {
 For complex expressions with OR operators or grouping, convert to MygramDB format:
 
 ```typescript
-import { MygramClient, convertSearchExpression, hasComplexExpression } from 'mygram-client';
+import { MygramClient, convertSearchExpression, hasComplexExpression } from 'mygramdb-client';
 
 const client = new MygramClient();
 await client.connect();
@@ -271,7 +296,7 @@ import {
   simplifySearchExpression,
   hasComplexExpression,
   SearchOptions,
-} from 'mygram-client';
+} from 'mygramdb-client';
 
 async function smartSearch(
   client: MygramClient,
@@ -377,7 +402,7 @@ interface SearchExpression {
   requiredTerms: string[];   // Terms marked with +
   excludedTerms: string[];   // Terms marked with -
   optionalTerms: string[];   // Terms without prefix
-  orGroups: string[][];      // Groups of OR terms
+  rawExpression: string;     // Original expression, retained for OR/grouping
 }
 ```
 
@@ -407,7 +432,7 @@ The parser will throw an error if:
 - Expression is empty or invalid
 
 ```typescript
-import { parseSearchExpression } from 'mygram-client';
+import { parseSearchExpression } from 'mygramdb-client';
 
 try {
   const parsed = parseSearchExpression('(unbalanced');

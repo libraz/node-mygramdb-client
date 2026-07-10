@@ -1,6 +1,6 @@
 # 検索式パーサー
 
-mygram-clientライブラリには、Web形式の検索構文をMygramDBクエリに変換する強力な検索式パーサーが含まれています。
+mygramdb-clientライブラリには、Web形式の検索構文をMygramDBクエリに変換する強力な検索式パーサーが含まれています。
 
 ## 概要
 
@@ -111,15 +111,15 @@ Web形式の検索式を構造化された形式に解析します。
 
 **例:**
 ```typescript
-import { parseSearchExpression } from 'mygram-client';
+import { parseSearchExpression } from 'mygramdb-client';
 
 const parsed = parseSearchExpression('+golang -old (tutorial OR guide)');
 console.log(parsed);
 // {
 //   requiredTerms: ['golang'],
 //   excludedTerms: ['old'],
-//   optionalTerms: [],
-//   orGroups: [['tutorial', 'guide']]
+//   optionalTerms: ['tutorial', 'guide'],
+//   rawExpression: '+golang -old (tutorial OR guide)'
 // }
 ```
 
@@ -138,7 +138,7 @@ Web形式の検索式をMygramDBクエリ形式に変換します。
 
 **例:**
 ```typescript
-import { convertSearchExpression } from 'mygram-client';
+import { convertSearchExpression } from 'mygramdb-client';
 
 convertSearchExpression('golang tutorial');
 // 戻り値: 'golang OR tutorial'
@@ -175,7 +175,7 @@ function simplifySearchExpression(expression: string): {
 
 **例:**
 ```typescript
-import { simplifySearchExpression } from 'mygram-client';
+import { simplifySearchExpression } from 'mygramdb-client';
 
 const { mainTerm, andTerms, notTerms } = simplifySearchExpression('+golang tutorial -old -deprecated');
 console.log(mainTerm);  // 'golang'
@@ -198,7 +198,7 @@ function hasComplexExpression(expression: string): boolean
 
 **例:**
 ```typescript
-import { hasComplexExpression } from 'mygram-client';
+import { hasComplexExpression } from 'mygramdb-client';
 
 hasComplexExpression('+golang tutorial -old');
 // 戻り値: false (単純な式)
@@ -210,6 +210,30 @@ hasComplexExpression('+(tutorial OR guide)');
 // 戻り値: true (グループ化あり)
 ```
 
+### toQueryString()
+
+```typescript
+function toQueryString(expr: SearchExpression): string
+```
+
+すでに解析済みの `SearchExpression` から MygramDB クエリ文字列を組み立てます。
+`convertSearchExpression()` が解析後に行う低レベルの処理で、`parseSearchExpression()`
+で得た `SearchExpression` を手元に持っている場合に直接呼び出せます。
+
+**パラメータ:**
+- `expr` (SearchExpression) - 解析済みの式
+
+**戻り値:** MygramDBクエリ文字列
+
+**例:**
+```typescript
+import { parseSearchExpression, toQueryString } from 'mygramdb-client';
+
+const expr = parseSearchExpression('+golang -old');
+toQueryString(expr);
+// 戻り値: 'golang AND NOT old'
+```
+
 ## クライアントでの使用方法
 
 ### 単純な式
@@ -217,7 +241,7 @@ hasComplexExpression('+(tutorial OR guide)');
 OR演算子やグループ化を含まない単純な式の場合、`simplifySearchExpression()`を使用して用語を抽出します:
 
 ```typescript
-import { MygramClient, simplifySearchExpression } from 'mygram-client';
+import { MygramClient, simplifySearchExpression } from 'mygramdb-client';
 
 const client = new MygramClient();
 await client.connect();
@@ -239,7 +263,7 @@ const results = await client.search('articles', mainTerm, {
 OR演算子やグループ化を含む複雑な式の場合、MygramDB形式に変換します:
 
 ```typescript
-import { MygramClient, convertSearchExpression, hasComplexExpression } from 'mygram-client';
+import { MygramClient, convertSearchExpression, hasComplexExpression } from 'mygramdb-client';
 
 const client = new MygramClient();
 await client.connect();
@@ -271,7 +295,7 @@ import {
   simplifySearchExpression,
   hasComplexExpression,
   SearchOptions,
-} from 'mygram-client';
+} from 'mygramdb-client';
 
 async function smartSearch(
   client: MygramClient,
@@ -377,7 +401,7 @@ interface SearchExpression {
   requiredTerms: string[];   // +でマークされた用語
   excludedTerms: string[];   // -でマークされた用語
   optionalTerms: string[];   // プレフィックスのない用語
-  orGroups: string[][];      // OR用語のグループ
+  rawExpression: string;     // OR/グループ化のために保持される元の式
 }
 ```
 
@@ -407,7 +431,7 @@ interface SearchExpression {
 - 式が空または無効
 
 ```typescript
-import { parseSearchExpression } from 'mygram-client';
+import { parseSearchExpression } from 'mygramdb-client';
 
 try {
   const parsed = parseSearchExpression('(unbalanced');

@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-10
+
+Adds a built-in connection pool with resilience controls for high-throughput
+workloads and tracks MygramDB **v1.8.0** boolean-expression handling. The pool
+is additive; direct `MygramClient` usage is unchanged apart from the opt-in
+`autoReconnect` flag.
+
+### Added
+
+- **`MygramPool`** — a connection pool sized for hundreds of requests per second.
+  It spreads work across a fixed set of clients with least-in-flight dispatch,
+  a bounded wait queue with load shedding (`PoolOverloadError`) and a per-call
+  queue deadline (`TimeoutError`), exponential-backoff self-healing reconnects,
+  idle keep-alive pings, optional metrics sampling (`onMetrics` / `metrics()`),
+  and idempotent-read retry on a healthy slot. Configure via `MygramPoolConfig`
+  (`size`, `maxQueue`, `queueTimeoutMs`, `readRetries`, `reconnectBackoffMs`,
+  `keepAliveIntervalMs`, `metricsIntervalMs`, `onMetrics`, `onError`,
+  `circuitBreaker`, `onEvent`, `clientFactory`).
+- The pool follows Node ecosystem conventions: `start()` is optional warm-up
+  (the first query starts it lazily, memoized and idempotent), `close()` tears
+  it down gracefully with `end()` as an alias, and `onError` surfaces
+  background errors that no caller is awaiting. `withClient()` checks out a
+  single client for multi-command work.
+- **Circuit breaker** — an optional `circuitBreaker` (`CircuitBreakerConfig`:
+  `failureThreshold` default 5, `resetTimeoutMs` default 10000) wraps the query
+  path so the pool fails fast with **`CircuitOpenError`** against an unreachable
+  server instead of retrying into it, then probes with a half-open trial. State
+  transitions (`CircuitState`) are reported through the event sink.
+- **`onEvent`** — an optional sink for discrete lifecycle events
+  (`PoolEvent`: `acquire`, `connection_discarded`, `retry`,
+  `breaker_state_change`); callback errors are swallowed so instrumentation
+  cannot disrupt the pool.
+- **`PoolOverloadError`** — thrown when the wait queue is full so callers can
+  shed load (map to HTTP 503).
+- **`autoReconnect`** (`ClientConfig`) — when the pure-JavaScript transport
+  finds the socket dead *before* a command is written, it reconnects and
+  resends once. A failure *after* the write is surfaced as a `ConnectionError`
+  without resending, since the command may already have been applied. The
+  native binding does not honour the flag. Default: false.
+
+### Fixed
+
+- **`searchRaw()` / `searchRawWithHighlights()` now send the boolean expression
+  verbatim (unquoted).** MygramDB v1.8+ treats a quoted phrase that embeds
+  `AND` / `OR` / `NOT` as a literal phrase, so a quoted expression no longer
+  matches; sending it unquoted lets the server's AST parser interpret the
+  operators and parentheses, matching the reference client. Control characters
+  are still rejected.
+- **The published bundle now imports cleanly from both ESM and CommonJS.** Node
+  built-ins are kept external in their `node:` form, and the native loader
+  resolves its own path from `import.meta.url` or `__filename` depending on the
+  format it runs under, so `import`/`require` of the package no longer throws at
+  load time.
+
+### Changed
+
+- The docker e2e stack now defaults to the MygramDB v1.8.0 server image.
+
 ## [1.3.0] - 2026-06-15
 
 Tracks MygramDB **v1.7.0** (database-qualified table identity, boolean search,
@@ -149,7 +207,9 @@ existing single-database, single-token usage produces byte-identical commands.
 - Input validation and error handling
 - TypeScript type definitions
 
+[1.4.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/libraz/node-mygramdb-client/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/libraz/mygram-db/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/libraz/mygram-db/releases/tag/v1.0.0
+[1.1.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/libraz/node-mygramdb-client/releases/tag/v1.0.0
