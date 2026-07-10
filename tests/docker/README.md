@@ -24,7 +24,7 @@ docker compose -f tests/docker/docker-compose.yml down -v
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MYGRAMDB_VERSION` | `1.7.0` | Server image tag (`ghcr.io/libraz/mygram-db:<tag>`; e.g. `1.7`, `latest`) |
+| `MYGRAMDB_VERSION` | `1.8.0` | Server image tag (`ghcr.io/libraz/mygram-db:<tag>`; e.g. `1.7`, `latest`) |
 | `MYSQL_VERSION` | `8.4` | MySQL image tag |
 | `MYGRAM_PORT` | `11016` | Host port mapped to the server's TCP API |
 | `MYGRAM_HTTP_PORT` | `18080` | Host port mapped to the server's HTTP/health API |
@@ -49,8 +49,10 @@ With `MYGRAM_E2E_SEEDED=1` the `seeded dataset (docker e2e)` block in
 - `facet` aggregation by category
 - `searchWithHighlights` snippet wrapping (server runs with `verify_text: all`)
 
-The version-agnostic v1.7 round-trip checks (`searchRaw`, `setVariable` /
+The version-agnostic v1.7+ round-trip checks (`searchRaw`, `setVariable` /
 `showVariables`, `sync` family) also run without the seed, against any server.
+The `connection pool (seeded dataset)` block additionally drives a concurrent
+burst through `MygramPool` to verify pooled throughput end-to-end.
 
 ## Files
 
