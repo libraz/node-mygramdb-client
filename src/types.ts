@@ -25,6 +25,14 @@ export interface ClientConfig {
   recvBufferSize?: number;
   /** Maximum allowed query expression length (characters) */
   maxQueryLength?: number;
+  /**
+   * Reconnect once and resend when the socket is found dead before a command is
+   * written to the wire (pure-JavaScript transport only). A failure that occurs
+   * after the command has been written is surfaced as a {@link ConnectionError}
+   * without resending, since the command may already have been applied
+   * server-side. The native binding does not honour this flag. Default: false.
+   */
+  autoReconnect?: boolean;
 }
 
 /**

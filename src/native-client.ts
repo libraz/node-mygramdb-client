@@ -73,7 +73,11 @@ const DEFAULT_CONFIG: Required<ClientConfig> = {
   socketPath: '',
   timeout: 5000,
   recvBufferSize: 65536,
-  maxQueryLength: DEFAULT_MAX_QUERY_LENGTH
+  maxQueryLength: DEFAULT_MAX_QUERY_LENGTH,
+  // The native transport routes every command through the addon's sendCommand
+  // and does not implement JS-side reconnect; the field is accepted for config
+  // parity but has no effect on the native path.
+  autoReconnect: false
 };
 
 /**

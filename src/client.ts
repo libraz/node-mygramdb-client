@@ -53,7 +53,8 @@ const DEFAULT_CONFIG: Required<ClientConfig> = {
   socketPath: '',
   timeout: 5000,
   recvBufferSize: 65536,
-  maxQueryLength: DEFAULT_MAX_QUERY_LENGTH
+  maxQueryLength: DEFAULT_MAX_QUERY_LENGTH,
+  autoReconnect: false
 };
 
 /**
@@ -92,7 +93,8 @@ export class MygramClient {
       host: merged.host,
       port: merged.port,
       socketPath: merged.socketPath,
-      timeout: merged.timeout
+      timeout: merged.timeout,
+      autoReconnect: merged.autoReconnect
     });
   }
 
@@ -169,10 +171,11 @@ export class MygramClient {
   /**
    * Search using a pre-built boolean expression (MygramDB v1.7+).
    *
-   * The expression is sent as one quoted token so the server's AST parser can
-   * interpret `AND` / `OR` / `NOT` / parentheses. Pair this with
-   * {@link convertSearchExpression} to preserve OR / grouping semantics that
-   * {@link search}'s AND/NOT decomposition cannot express.
+   * The expression is sent verbatim (unquoted) so the server's AST parser can
+   * interpret `AND` / `OR` / `NOT` / parentheses; a quoted phrase would be
+   * treated as a literal. Pair this with {@link convertSearchExpression} to
+   * preserve OR / grouping semantics that {@link search}'s AND/NOT
+   * decomposition cannot express.
    *
    * @param {string} table - Table name (bare or `database.table`)
    * @param {string} rawQuery - Pre-built boolean expression

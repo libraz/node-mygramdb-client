@@ -44,6 +44,13 @@ export interface ConnectionConfig {
    * the underlying socket reports idle peers via the `timeout` event.
    */
   timeout: number;
+  /**
+   * Reconnect once and resend a command when the socket is found dead before
+   * the command is written. A failure after the write is surfaced as a
+   * {@link ConnectionError} without resending. Default behaviour when false is
+   * to reject immediately with {@link ConnectionError}.
+   */
+  autoReconnect: boolean;
 }
 
 interface PendingCommand {
@@ -69,6 +76,7 @@ export class Connection {
   private readonly queue: PendingCommand[] = [];
   private inflight: PendingCommand | null = null;
   private inflightTimeout: NodeJS.Timeout | null = null;
+  private reconnecting = false;
 
   /**
    * Build a connection bound to a given configuration.
@@ -218,8 +226,13 @@ export class Connection {
   sendCommand(command: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       if (!this.connected || this.socket === null) {
-        reject(new ConnectionError('Not connected to server'));
-        return;
+        // A dead socket discovered before the command is written is recovered
+        // by dispatchNext (reconnect + resend) when auto-reconnect is enabled;
+        // otherwise the dead connection is reported immediately.
+        if (!this.config.autoReconnect) {
+          reject(new ConnectionError('Not connected to server'));
+          return;
+        }
       }
       this.queue.push({ command, resolve, reject });
       this.dispatchNext();
@@ -227,16 +240,49 @@ export class Connection {
   }
 
   private dispatchNext(): void {
-    if (this.inflight !== null) return;
+    if (this.inflight !== null || this.reconnecting) return;
     const next = this.queue.shift();
     if (!next) return;
     if (!this.connected || this.socket === null) {
+      if (this.config.autoReconnect) {
+        // Dead before send: reconnect once and resend this command. A single
+        // reconnect attempt is made per command; failure rejects it.
+        this.reconnectAndSend(next);
+        return;
+      }
       next.reject(new ConnectionError('Not connected to server'));
       this.failPending(new ConnectionError('Not connected to server'));
       return;
     }
 
-    this.inflight = next;
+    this.beginInflight(next);
+  }
+
+  private reconnectAndSend(command: PendingCommand): void {
+    this.reconnecting = true;
+    this.connect()
+      .then(() => {
+        this.reconnecting = false;
+        this.beginInflight(command);
+      })
+      .catch((error: unknown) => {
+        this.reconnecting = false;
+        const failure =
+          error instanceof Error ? new ConnectionError(error.message) : new ConnectionError('Reconnect failed');
+        command.reject(failure);
+        this.failPending(failure);
+      });
+  }
+
+  private beginInflight(command: PendingCommand): void {
+    const socket = this.socket;
+    if (!this.connected || socket === null) {
+      command.reject(new ConnectionError('Not connected to server'));
+      this.failPending(new ConnectionError('Not connected to server'));
+      return;
+    }
+
+    this.inflight = command;
     this.inflightTimeout = setTimeout(() => {
       this.inflightTimeout = null;
       const pending = this.inflight;
@@ -247,7 +293,7 @@ export class Connection {
       this.dispatchNext();
     }, this.config.timeout);
 
-    this.socket.write(`${next.command}\r\n`);
+    socket.write(`${command.command}\r\n`);
   }
 
   private handleData(data: string): void {
