@@ -146,8 +146,11 @@ export function parseFacetResponse(response: string): FacetResponse {
   const results: FacetValue[] = [];
   for (let i = 1; i < lines.length; i += 1) {
     const line = lines[i];
-    if (line === '' || line.startsWith('#')) continue;
     const tab = line.indexOf('\t');
+    // A line starting with '#' is a comment (e.g. `# DEBUG`) only when it has
+    // no tab. A facet value may legitimately start with '#', in which case the
+    // line still has the `<value>\t<count>` shape and must be kept (MygramDB v1.8+).
+    if (line === '' || (line.startsWith('#') && tab < 0)) continue;
     if (tab < 0) {
       throw new ProtocolError(`Invalid FACET row: ${line}`);
     }
