@@ -37,7 +37,9 @@ export interface SearchExpression {
 // ESM-compatible require for loading native .node bindings
 import { createRequire } from 'node:module';
 
-const nativeRequire = createRequire(import.meta.url);
+// createRequire accepts either an absolute path or a file URL string, so the
+// CJS bundle can base it on __filename and the ESM bundle on import.meta.url.
+const nativeRequire = createRequire(typeof __filename !== 'undefined' ? __filename : import.meta.url);
 
 /**
  * Token types for expression parsing

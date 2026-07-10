@@ -3,7 +3,7 @@
  *
  * This loader is based on node-darts implementation and handles
  * various build configurations and CI environments.
- * ESM-compatible using import.meta.url and createRequire.
+ * Works from both the ESM and CJS bundles this package ships.
  */
 
 import * as fs from 'node:fs';
@@ -11,9 +11,12 @@ import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const esmRequire = createRequire(import.meta.url);
-const currentFilename = fileURLToPath(import.meta.url);
+// Resolve the current module path in both bundles this package ships. The CJS
+// bundle exposes __filename but has no import.meta; the ESM bundle is the
+// reverse, so pick whichever the running format provides.
+const currentFilename = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
 const currentDirname = path.dirname(currentFilename);
+const esmRequire = createRequire(currentFilename);
 
 // Detect environment
 const runtimePlatform = process.platform;
