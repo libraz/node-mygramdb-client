@@ -8,6 +8,7 @@
 
 import {
   ensureQueryLengthWithinLimit,
+  ensureSafeCommandValue,
   ensureSafeFilterIdentifiers,
   ensureSafeIdentifier,
   ensureSafeStringArray,
@@ -147,15 +148,17 @@ function appendHighlightClause(parts: string[], highlight: SearchOptions['highli
 }
 
 /**
- * Build a `SEARCH` command line that sends a pre-built boolean expression as a
- * single search token (MygramDB v1.7+).
+ * Build a `SEARCH` command line that sends a pre-built boolean expression
+ * (MygramDB v1.7+).
  *
- * The raw expression (e.g. `python OR (ruby AND rails)`) is escaped with the
- * same quoting rules as a normal query so the server's AST parser receives one
- * token and can interpret `AND` / `OR` / `NOT` / parentheses. Use this with the
- * output of {@link ../search-expression.convertSearchExpression} when boolean
- * grouping semantics must be preserved rather than decomposed into AND/NOT
- * clauses.
+ * The raw expression (e.g. `python OR (ruby AND rails)`) is sent verbatim rather
+ * than as a quoted token: the server treats a quoted phrase that embeds
+ * `AND`/`OR`/`NOT` as a literal phrase, so passing the expression unquoted lets
+ * the server tokenize it and have its AST parser interpret the operators and
+ * grouping. Only control characters are rejected. This mirrors the reference
+ * C++ client's `SearchRaw`. Use this with the output of
+ * {@link ../search-expression.convertSearchExpression} when boolean grouping
+ * semantics must be preserved rather than decomposed into AND/NOT clauses.
  *
  * @param {string} table - Table name (bare or `database.table`)
  * @param {string} rawQuery - Pre-built boolean expression
@@ -170,7 +173,7 @@ export function buildSearchRawCommand(table: string, rawQuery: string, options: 
   if (rawQuery === '') {
     throw new InputValidationError('Input for rawQuery must not be empty');
   }
-  const safeQuery = escapeQueryString(rawQuery, 'rawQuery');
+  const safeQuery = ensureSafeCommandValue(rawQuery, 'rawQuery');
   validateHighlight(highlight);
 
   const parts: string[] = ['SEARCH', safeTable, safeQuery];
