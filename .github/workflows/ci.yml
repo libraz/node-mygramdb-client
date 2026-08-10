@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: corepack enable
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: yarn
@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: corepack enable
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: yarn
@@ -48,6 +48,6 @@ jobs:
         run: yarn test:coverage
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 24
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
