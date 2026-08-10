@@ -293,8 +293,10 @@ if (info.ready === false) {
 
 `getReplicationStatus()` は `secondsSinceLastApplied` を返します。これはレプリ
 ケーション位置が進んだ地点で記録されるため、単なる疎通ではなく実際の進捗を表し
-ます。ダンプと `OPTIMIZE` は専用のデッドラインを持つので、`timeout` は停止した
-クエリを検知できる短さのまま維持できます。
+ます。これは管理コマンドなので、トークンを設定した v1.10 サーバーから取得するには
+`adminToken` が必要です（`INFO` のレディネス項目とは異なります）。ダンプと
+`OPTIMIZE` は専用のデッドラインを持つので、`timeout` は停止したクエリを検知できる
+短さのまま維持できます。
 
 ```typescript
 const client = new MygramClient({ timeout: 3000, dumpSaveTimeout: 900_000 });

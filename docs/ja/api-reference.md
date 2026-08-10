@@ -1094,6 +1094,12 @@ interface ReplicationStatus {
 監視対象としては `secondsSinceLastApplied` が適切です。レプリケーション位置が
 進んだ地点で記録されるため、単なる疎通ではなく実際の進捗を測れます。
 
+`REPLICATION STATUS` は管理コマンドなので、トークンを設定した v1.10 サーバーから
+これらを読むには `adminToken` が必要です。レディネスは不要です。
+[`ServerInfo`](#serverinfo) の `ready` と `dataInitialized` はゲートされていない
+`INFO` から得られます。レディネスだけでトラフィックを制御する監視にトークンは
+不要ですが、レプリケーション遅延でアラートを出す監視には必要です。
+
 ### DebugInfo
 
 ```typescript

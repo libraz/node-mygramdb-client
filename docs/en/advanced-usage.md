@@ -300,6 +300,12 @@ MygramDB v1.10 gates administrative commands — `DUMP *`, `REPLICATION *`,
 refuses to start when its listener is not loopback and no token is configured.
 Ordinary `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` traffic never needs one.
 
+The gate is only active when the server itself has a token configured. A server
+that starts without one — which a loopback-only listener may do — runs the
+administrative commands for any connection, so the same client code works
+against it with `adminToken` unset. Do not read a local success as proof that
+production will accept the same call.
+
 Authentication is per connection, so it has to be repeated after every
 reconnect. Set `adminToken` on the `ClientConfig` and the client handles that
 for you — on the first connect, on an `autoReconnect` recovery, and on every

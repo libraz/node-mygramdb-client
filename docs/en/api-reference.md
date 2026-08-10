@@ -1143,6 +1143,12 @@ start succeeds. `secondsSinceLastApplied` is the value to alert on: it is
 stamped where the replication position advances, so it measures real progress
 rather than mere connectivity.
 
+`REPLICATION STATUS` is an administrative command, so reading any of this from a
+v1.10 server that has a token configured requires `adminToken`. Readiness does
+not: `ready` and `dataInitialized` on [`ServerInfo`](#serverinfo) come from
+`INFO`, which is ungated. A monitor that only gates traffic on readiness needs no
+token; one that alerts on replication lag does.
+
 ### DebugInfo
 
 ```typescript

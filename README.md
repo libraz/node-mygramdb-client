@@ -314,8 +314,10 @@ if (info.ready === false) {
 
 `getReplicationStatus()` reports `secondsSinceLastApplied`, stamped where the
 replication position advances, so it measures progress rather than
-connectivity. Dumps and `OPTIMIZE` get their own deadlines, leaving `timeout`
-short enough to detect a stalled query:
+connectivity. It is an administrative command, so a v1.10 server with a token
+configured needs `adminToken` to answer it — unlike the readiness fields on
+`INFO`. Dumps and `OPTIMIZE` get their own deadlines, leaving `timeout` short
+enough to detect a stalled query:
 
 ```typescript
 const client = new MygramClient({ timeout: 3000, dumpSaveTimeout: 900_000 });

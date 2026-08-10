@@ -140,7 +140,7 @@ const client = new MygramClient({
 
 ### 管理コマンド
 
-MygramDB v1.10 は `DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES` の実行前に、同一接続上での `AUTH` を要求します。`adminToken` を設定しておけば、再接続時も含めて接続のたびにクライアントが認証します。検索にトークンは不要です。
+MygramDB v1.10 は `DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES` の実行前に、同一接続上での `AUTH` を要求します。`adminToken` を設定しておけば、再接続時も含めて接続のたびにクライアントが認証します。検索にトークンは不要で、サーバー自身がトークン未設定で起動している場合はどのコマンドにも不要です（[管理コマンドの認証](./advanced-usage.md#管理コマンドの認証)を参照）。
 
 ```typescript
 const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });

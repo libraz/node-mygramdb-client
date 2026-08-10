@@ -143,7 +143,10 @@ const client = new MygramClient({
 MygramDB v1.10 requires an `AUTH` on the same connection before it will run
 `DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`,
 `CACHE *`, `SET` or `SHOW VARIABLES`. Set `adminToken` and the client
-authenticates on every connect, reconnects included. Searching needs no token.
+authenticates on every connect, reconnects included. Searching needs no token,
+and neither does any command against a server that was started without a token
+of its own — see [Administrative
+Authentication](./advanced-usage.md#administrative-authentication).
 
 ```typescript
 const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
