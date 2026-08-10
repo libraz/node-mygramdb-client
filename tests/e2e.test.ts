@@ -12,6 +12,7 @@ import { PoolOverloadError, ProtocolError } from '../src/errors';
 import type { NativeMygramClient } from '../src/native-client';
 import { MygramPool } from '../src/pool';
 import { convertSearchExpression, simplifySearchExpression } from '../src/search-expression';
+import type { ClientConfig } from '../src/types';
 
 const TEST_HOST = process.env.MYGRAM_HOST || '127.0.0.1';
 const TEST_PORT = parseInt(process.env.MYGRAM_PORT || '11016', 10);
@@ -22,6 +23,26 @@ const TEST_PORT = parseInt(process.env.MYGRAM_PORT || '11016', 10);
  * result sets; against an arbitrary developer server these are skipped.
  */
 const SEEDED = process.env.MYGRAM_E2E_SEEDED === '1';
+
+/**
+ * Administrative token, exported by tests/docker/run-e2e.sh only when the server
+ * it booted actually understands `AUTH` (v1.10+). A server that predates the
+ * command rejects it, so the token has to stay unset there — the suite's
+ * administrative calls (`CACHE STATS`, `DUMP STATUS`, `OPTIMIZE`, `SET`,
+ * `SHOW VARIABLES`, the `SYNC` family) are ungated on those versions.
+ */
+const ADMIN_TOKEN = process.env.MYGRAM_ADMIN_TOKEN || undefined;
+
+/**
+ * Build the connection config every client and pool in this suite is created
+ * from, so the token is threaded through one place.
+ *
+ * @param {number} timeout - Request timeout in milliseconds
+ * @returns {ClientConfig} Connection config for the server under test
+ */
+function connectionConfig(timeout: number): ClientConfig {
+  return { host: TEST_HOST, port: TEST_PORT, timeout, adminToken: ADMIN_TOKEN };
+}
 
 /** Common client interface for testing both implementations */
 type TestClient = MygramClient | NativeMygramClient;
@@ -44,7 +65,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000, stepMs = 25):
  * Check if the MygramDB server is available
  */
 async function isServerAvailable(): Promise<boolean> {
-  const client = new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 1000 });
+  const client = new MygramClient(connectionConfig(1000));
   try {
     await client.connect();
     client.disconnect();
@@ -579,7 +600,7 @@ async function isNativeClientWorking(): Promise<boolean> {
     return false;
   }
   try {
-    const client = createMygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 1000 });
+    const client = createMygramClient(connectionConfig(1000));
     // Check if it's actually a native client with working methods
     if (getClientType(client) !== 'native') {
       return false;
@@ -597,25 +618,30 @@ describe('Integration Tests', async () => {
   const serverAvailable = await isServerAvailable();
   const nativeWorking = serverAvailable ? await isNativeClientWorking() : false;
 
+  // Against an arbitrary developer machine an absent server is a reason to skip.
+  // Under the docker harness it is a failure: that harness booted a server and
+  // waited for its readiness probe, so an unreachable one means the client cannot
+  // talk to it — and skipping the whole suite would still exit 0 and read as a
+  // pass, which is how a broken connection stays invisible.
+  describe.runIf(SEEDED && !serverAvailable)('docker harness', () => {
+    it('reaches the server the harness booted', () => {
+      expect(serverAvailable).toBe(true);
+    });
+  });
+
   describe.skipIf(!serverAvailable)('with real server', () => {
     // Test pure JavaScript client
-    runClientTests(
-      'MygramClient (JavaScript)',
-      () => new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 })
-    );
+    runClientTests('MygramClient (JavaScript)', () => new MygramClient(connectionConfig(5000)));
 
     // Test native client if it actually works
     describe.skipIf(!nativeWorking)('NativeMygramClient (C++)', () => {
-      runClientTests(
-        'NativeMygramClient',
-        () => createMygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 }) as NativeMygramClient
-      );
+      runClientTests('NativeMygramClient', () => createMygramClient(connectionConfig(5000)) as NativeMygramClient);
     });
 
     // Test client factory
     describe('createMygramClient factory', () => {
       it('should create a client that connects successfully', async () => {
-        const client = createMygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 });
+        const client = createMygramClient(connectionConfig(5000));
         await client.connect();
 
         expect(client.isConnected()).toBe(true);
@@ -627,7 +653,7 @@ describe('Integration Tests', async () => {
       });
 
       it('should force JavaScript implementation when requested', async () => {
-        const client = createMygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 }, true);
+        const client = createMygramClient(connectionConfig(5000), true);
         await client.connect();
 
         expect(getClientType(client)).toBe('javascript');
@@ -648,7 +674,7 @@ describe('Integration Tests', async () => {
       let jsClient: MygramClient;
 
       beforeEach(async () => {
-        jsClient = new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 });
+        jsClient = new MygramClient(connectionConfig(5000));
         await jsClient.connect();
       });
 
@@ -695,7 +721,7 @@ describe('Integration Tests', async () => {
       const ids = (r: { results: { primaryKey: string }[] }): string[] => r.results.map((d) => d.primaryKey).sort();
 
       beforeEach(async () => {
-        client = new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 });
+        client = new MygramClient(connectionConfig(5000));
         await client.connect();
       });
       afterEach(() => client.disconnect());
@@ -776,7 +802,7 @@ describe('Integration Tests', async () => {
 
     beforeAll(async () => {
       pool = new MygramPool({
-        connection: { host: TEST_HOST, port: TEST_PORT, timeout: 15000 },
+        connection: connectionConfig(15000),
         size: POOL_SIZE,
         maxQueue: BURST * 2, // absorb the whole burst rather than shed it
         queueTimeoutMs: 15000,
@@ -869,7 +895,7 @@ describe('Integration Tests', async () => {
       // still believes them healthy. The pool must notice on next use, retire
       // the dead slots, reconnect out of band, and resume serving correct data.
       const pool = new MygramPool({
-        connection: { host: TEST_HOST, port: TEST_PORT, timeout: 15000 },
+        connection: connectionConfig(15000),
         size: 4,
         readRetries: 2,
         reconnectBackoffMs: [50, 250],
@@ -913,7 +939,7 @@ describe('Integration Tests', async () => {
       // waiter, so a concurrent burst beyond that is shed immediately rather
       // than buffered without bound.
       const pool = new MygramPool({
-        connection: { host: TEST_HOST, port: TEST_PORT, timeout: 15000 },
+        connection: connectionConfig(15000),
         size: 1,
         maxQueue: 1,
         queueTimeoutMs: 15000,

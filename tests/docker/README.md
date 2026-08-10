@@ -24,16 +24,33 @@ docker compose -f tests/docker/docker-compose.yml down -v
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MYGRAMDB_VERSION` | `1.8.0` | Server image tag (`ghcr.io/libraz/mygram-db:<tag>`; e.g. `1.7`, `latest`) |
+| `MYGRAMDB_VERSION` | `1.10.0` | Server image tag (`ghcr.io/libraz/mygram-db:<tag>`; e.g. `1.8.0`, `latest`) |
 | `MYSQL_VERSION` | `8.4` | MySQL image tag |
 | `MYGRAM_PORT` | `11016` | Host port mapped to the server's TCP API |
 | `MYGRAM_HTTP_PORT` | `18080` | Host port mapped to the server's HTTP/health API |
+| `MYGRAM_ADMIN_TOKEN` | `e2e-admin-token` | Administrative token given to the server and, when it supports `AUTH`, to the client |
 | `KEEP_UP` | `0` | When `1`, leave the stack running after tests (debugging) |
 
 ```bash
-MYGRAMDB_VERSION=latest yarn test:e2e:docker
-KEEP_UP=1 yarn test:e2e:docker     # inspect the running stack afterwards
+MYGRAMDB_VERSION=1.8.0 yarn test:e2e:docker   # older server, same suite
+KEEP_UP=1 yarn test:e2e:docker                # inspect the running stack afterwards
 ```
+
+## Administrative authentication
+
+The server's TCP listener binds `0.0.0.0` so the host can reach it, and v1.10
+refuses to start in that shape unless `api.admin_token` is configured. The token
+is injected through `MYGRAM_API_ADMIN_TOKEN`, which the server reads ahead of the
+mounted `mygramdb.yaml`, so one config file serves every image the suite runs
+against — an older server simply ignores the variable.
+
+`run-e2e.sh` then reads the running server's version from `GET /info` and hands
+the client a token only when that version is at least 1.10.0. The tag alone is
+not enough to decide, since it can be a moving alias such as `latest`, and a
+server predating `AUTH` rejects the command outright. Against v1.10 this means
+the suite's administrative calls — `CACHE STATS`, `DUMP STATUS`, `OPTIMIZE`,
+`SET`, `SHOW VARIABLES` and the `SYNC` family — exercise the authenticated path
+on every connect, pooled connections included.
 
 ## What it exercises
 
