@@ -45,6 +45,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Clear anything a previous run left behind. The services use fixed container
+# names, so a stack surviving an interrupted run (or a KEEP_UP=1 session) fails
+# the next `up` with a name conflict that says nothing about the real cause.
+"${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+
 echo "==> Starting e2e stack (mygramdb=${MYGRAMDB_VERSION:-1.10.0})"
 if ! MYGRAM_PORT="${MYGRAM_PORT}" MYGRAM_HTTP_PORT="${MYGRAM_HTTP_PORT}" \
   MYGRAM_ADMIN_TOKEN="${MYGRAM_ADMIN_TOKEN}" "${COMPOSE[@]}" up -d --wait; then
