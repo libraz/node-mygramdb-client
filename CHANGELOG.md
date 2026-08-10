@@ -5,12 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.0] - 2026-08-10
 
 Tracks MygramDB **v1.9.0** and **v1.10.0**. Every addition is backward
 compatible with older servers: an `ERROR` frame without a code, an `INFO`
 without readiness fields and a `FACET` header without a total are all still
 parsed, and a client that sets no `adminToken` behaves exactly as before.
+
+Three of the fixes below change what existing code sees, so check them before
+upgrading. `CacheStats` no longer carries `maxMemoryMb` or `ttlSeconds`, which
+never appeared in the response and always read as `0` — referencing either is
+now a type error. Literal search text quotes protocol keywords, so
+`search(table, 'a AND b')` matches that phrase instead of reaching the server as
+two clauses; `searchRaw()` or `queryMode: 'boolean'` is how an expression is sent
+now. And unprefixed terms in a web-style search expression combine with `AND`
+rather than `OR`, which narrows results that previously widened.
 
 ### Added
 
@@ -310,6 +319,7 @@ existing single-database, single-token usage produces byte-identical commands.
 - Input validation and error handling
 - TypeScript type definitions
 
+[1.5.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/libraz/node-mygramdb-client/compare/v1.2.0...v1.2.1
