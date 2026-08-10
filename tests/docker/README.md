@@ -66,6 +66,21 @@ With `MYGRAM_E2E_SEEDED=1` the `seeded dataset (docker e2e)` block in
 - `facet` aggregation by category
 - `searchWithHighlights` snippet wrapping (server runs with `verify_text: all`)
 
+Two further blocks cover the surface a specific server version introduced, and
+skip against anything older — the gate reads the version from `INFO` rather than
+the image tag, so a moving alias resolves correctly:
+
+- `v1.9 query surface`: `boolean` query mode including a nested group and a mode
+  combined with a filter, literal mode treating `OR` as text, the comparison
+  filter operators through both the record and the array form, facet pagination
+  with its distinct-value total, and ascending primary-key order
+- `v1.10 protocol surface`: readiness on `INFO`, a typed `ServerError` code for
+  an unknown table, the replication diagnostics fields, and — when a token is
+  configured — that search needs none, that an administrative command without
+  one is refused with the authentication code, that `authenticate()` upgrades an
+  open connection, that a wrong token fails the connect outright, and that a
+  pooled connection can run an administrative command
+
 The version-agnostic v1.7+ round-trip checks (`searchRaw`, `setVariable` /
 `showVariables`, `sync` family) also run without the seed, against any server.
 The `connection pool (seeded dataset)` block additionally drives a concurrent

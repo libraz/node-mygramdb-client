@@ -8,7 +8,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MygramClient } from '../src/client';
 import { createMygramClient, getClientType, isNativeAvailable } from '../src/client-factory';
-import { PoolOverloadError, ProtocolError } from '../src/errors';
+import { ErrorCode, isAuthRequiredErrorCode } from '../src/error-codes';
+import { PoolOverloadError, ProtocolError, ServerError } from '../src/errors';
 import type { NativeMygramClient } from '../src/native-client';
 import { MygramPool } from '../src/pool';
 import { convertSearchExpression, simplifySearchExpression } from '../src/search-expression';
@@ -42,6 +43,43 @@ const ADMIN_TOKEN = process.env.MYGRAM_ADMIN_TOKEN || undefined;
  */
 function connectionConfig(timeout: number): ClientConfig {
   return { host: TEST_HOST, port: TEST_PORT, timeout, adminToken: ADMIN_TOKEN };
+}
+
+/**
+ * Run `body` against a freshly connected client and always disconnect it.
+ *
+ * Used by the version-gated blocks instead of a beforeEach/afterEach pair, so
+ * each of them stays hook-free and the connection lifetime is visible in the
+ * test that owns it.
+ *
+ * @param {(client: MygramClient) => Promise<void>} body - Assertions to run
+ * @returns {Promise<void>} Resolves once the client has been disconnected
+ */
+async function withConnectedClient(body: (client: MygramClient) => Promise<void>): Promise<void> {
+  const client = new MygramClient(connectionConfig(5000));
+  await client.connect();
+  try {
+    await body(client);
+  } finally {
+    client.disconnect();
+  }
+}
+
+/**
+ * Same as {@link withConnectedClient} but deliberately without a token, to
+ * observe how the server gates a command from an unauthenticated connection.
+ *
+ * @param {(client: MygramClient) => Promise<void>} body - Assertions to run
+ * @returns {Promise<void>} Resolves once the client has been disconnected
+ */
+async function withUnauthenticatedClient(body: (client: MygramClient) => Promise<void>): Promise<void> {
+  const client = new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000 });
+  await client.connect();
+  try {
+    await body(client);
+  } finally {
+    client.disconnect();
+  }
 }
 
 /** Common client interface for testing both implementations */
@@ -614,9 +652,45 @@ async function isNativeClientWorking(): Promise<boolean> {
   }
 }
 
+/** Server version, as major/minor/patch. `[0, 0, 0]` when it cannot be read. */
+type ServerVersion = [number, number, number];
+
+/**
+ * Read the server's version, so the blocks below covering a version-specific
+ * surface skip against a server that predates it rather than fail.
+ */
+async function readServerVersion(): Promise<ServerVersion> {
+  const client = new MygramClient(connectionConfig(1000));
+  try {
+    await client.connect();
+    const { version } = await client.info();
+    client.disconnect();
+    const parsed = /(\d+)\.(\d+)\.(\d+)/.exec(version);
+    return parsed ? [Number(parsed[1]), Number(parsed[2]), Number(parsed[3])] : [0, 0, 0];
+  } catch {
+    return [0, 0, 0];
+  }
+}
+
+/**
+ * Whether `version` is at least `minimum`, compared field by field so 1.10.0
+ * sorts above 1.9.0 rather than below it as a string would.
+ */
+function atLeastVersion(version: ServerVersion, minimum: ServerVersion): boolean {
+  for (let i = 0; i < 3; i += 1) {
+    if (version[i] !== minimum[i]) {
+      return version[i] > minimum[i];
+    }
+  }
+  return true;
+}
+
 describe('Integration Tests', async () => {
   const serverAvailable = await isServerAvailable();
   const nativeWorking = serverAvailable ? await isNativeClientWorking() : false;
+  const serverVersion: ServerVersion = serverAvailable ? await readServerVersion() : [0, 0, 0];
+  const isV19 = atLeastVersion(serverVersion, [1, 9, 0]);
+  const isV110 = atLeastVersion(serverVersion, [1, 10, 0]);
 
   // Against an arbitrary developer machine an absent server is a reason to skip.
   // Under the docker harness it is a failure: that harness booted a server and
@@ -790,6 +864,208 @@ describe('Integration Tests', async () => {
         });
         expect(res.totalCount).toBe(1);
         expect(res.results[0].snippet).toContain('<em>python</em>');
+      });
+    });
+
+    // Query surface introduced in MygramDB v1.9, asserted against the fixed
+    // dataset. See tests/docker/mysql-init/02-seed.sql for the seeded statuses
+    // and categories these depend on.
+    describe.skipIf(!SEEDED || !isV19)('v1.9 query surface (seeded dataset)', () => {
+      const TABLE = 'testdb.articles';
+
+      const ids = (r: { results: { primaryKey: string }[] }): string[] => r.results.map((d) => d.primaryKey).sort();
+      const order = (r: { results: { primaryKey: string }[] }): string[] => r.results.map((d) => d.primaryKey);
+
+      it('boolean queryMode evaluates an OR expression', async () => {
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, 'ruby OR python', { queryMode: 'boolean' });
+          expect(res.totalCount).toBe(2);
+          expect(ids(res)).toEqual(['2', '3']);
+        });
+      });
+
+      it('boolean queryMode evaluates a nested group', async () => {
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, 'ruby AND (rails OR python)', { queryMode: 'boolean' });
+          expect(res.totalCount).toBe(1);
+          expect(ids(res)).toEqual(['2']);
+        });
+      });
+
+      it('boolean queryMode combines an expression with a filter', async () => {
+        // The reason queryMode exists: searchRaw takes an expression but no
+        // filters, so this combination was previously unreachable.
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, 'ruby OR python', {
+            queryMode: 'boolean',
+            filters: { category: 'science' }
+          });
+          expect(res.totalCount).toBe(1);
+          expect(ids(res)).toEqual(['3']);
+        });
+      });
+
+      it('literal mode matches a reserved word as text rather than as an operator', async () => {
+        // Same input as above without queryMode: quoted, so the server looks for
+        // the phrase "ruby OR python", which no document contains.
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, 'ruby OR python');
+          expect(res.totalCount).toBe(0);
+        });
+      });
+
+      it('filters with a greater-than comparison', async () => {
+        // 機械学習 matches ids 1 (status 1) and 5 (status 3).
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, '機械学習', { filters: { status: { op: '>', value: '1' } } });
+          expect(res.totalCount).toBe(1);
+          expect(ids(res)).toEqual(['5']);
+        });
+      });
+
+      it('filters with a not-equal comparison', async () => {
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, '機械学習', { filters: { category: { op: '!=', value: 'tech' } } });
+          expect(res.totalCount).toBe(1);
+          expect(ids(res)).toEqual(['5']);
+        });
+      });
+
+      it('filters a range through two conditions on one column', async () => {
+        // The array form is what makes two conditions on one column expressible.
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, '機械学習', {
+            filters: [
+              { column: 'status', op: '>=', value: '1' },
+              { column: 'status', op: '<=', value: '2' }
+            ]
+          });
+          expect(res.totalCount).toBe(1);
+          expect(ids(res)).toEqual(['1']);
+        });
+      });
+
+      it('treats a bare filter record as equality', async () => {
+        await withConnectedClient(async (client) => {
+          const res = await client.search(TABLE, '機械学習', { filters: { status: '3' } });
+          expect(ids(res)).toEqual(['5']);
+        });
+      });
+
+      it('applies a comparison filter to count', async () => {
+        await withConnectedClient(async (client) => {
+          const res = await client.count(TABLE, '機械学習', { filters: { status: { op: '>', value: '1' } } });
+          expect(res.count).toBe(1);
+        });
+      });
+
+      it('reports the distinct-value total alongside a limited facet page', async () => {
+        await withConnectedClient(async (client) => {
+          const resp = await client.facet(TABLE, 'category', { limit: 1 });
+          expect(resp.results).toHaveLength(1);
+          expect(resp.totalCount).toBe(2);
+        });
+      });
+
+      it('pages through facet values with offset', async () => {
+        await withConnectedClient(async (client) => {
+          const first = await client.facet(TABLE, 'category', { limit: 1 });
+          const second = await client.facet(TABLE, 'category', { limit: 1, offset: 1 });
+          expect(second.results).toHaveLength(1);
+          expect(second.totalCount).toBe(2);
+          expect(second.results[0].value).not.toBe(first.results[0].value);
+
+          const paged = [first.results[0], second.results[0]].map((v) => v.value).sort();
+          expect(paged).toEqual(['science', 'tech']);
+        });
+      });
+
+      it('orders by ascending primary key when sortDesc is false', async () => {
+        // Descending is the server default, so ascending has to be requested
+        // explicitly — the clause used to be dropped without a sortColumn.
+        await withConnectedClient(async (client) => {
+          expect(order(await client.search(TABLE, '機械学習', { sortDesc: false }))).toEqual(['1', '5']);
+          expect(order(await client.search(TABLE, '機械学習', { sortDesc: true }))).toEqual(['5', '1']);
+        });
+      });
+    });
+
+    // Protocol surface introduced in MygramDB v1.10.
+    describe.skipIf(!isV110)('v1.10 protocol surface', () => {
+      it('reports readiness on INFO', async () => {
+        await withConnectedClient(async (client) => {
+          const info = await client.info();
+          expect(info.dataInitialized).toBe(true);
+          expect(info.ready).toBe(true);
+        });
+      });
+
+      it('rejects an unknown table with a typed error code', async () => {
+        await withConnectedClient(async (client) => {
+          const error = await client.search('no_such_table', 'python').catch((e: unknown) => e);
+          expect(error).toBeInstanceOf(ServerError);
+          expect((error as ServerError).code).toBe(ErrorCode.TableNotFound);
+          // The message holds the human-readable remainder, without the code.
+          expect((error as ServerError).message).not.toMatch(/^\d+\s/);
+          expect((error as ServerError).rawFrame).toContain(`${ErrorCode.TableNotFound}`);
+        });
+      });
+
+      it('reports the replication diagnostics fields', async () => {
+        await withConnectedClient(async (client) => {
+          const status = await client.getReplicationStatus();
+          expect(typeof status.state).toBe('string');
+          expect(typeof status.crcErrors).toBe('number');
+          expect(typeof status.schemaIncompatible).toBe('boolean');
+          // Stamped where the replication position advances, so it measures
+          // progress rather than connectivity.
+          expect(typeof status.secondsSinceLastApplied).toBe('number');
+        });
+      });
+
+      // Only meaningful when the harness configured a token; a server started
+      // without one leaves the administrative commands ungated.
+      describe.skipIf(!ADMIN_TOKEN)('administrative authentication', () => {
+        it('serves ordinary search traffic without a token', async () => {
+          await withUnauthenticatedClient(async (client) => {
+            await expect(client.search('testdb.articles', 'python')).resolves.toBeDefined();
+          });
+        });
+
+        it('refuses an administrative command without a token', async () => {
+          await withUnauthenticatedClient(async (client) => {
+            const error = await client.cacheStats().catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(ServerError);
+            expect(isAuthRequiredErrorCode((error as ServerError).code)).toBe(true);
+          });
+        });
+
+        it('authenticates an already-open connection with authenticate()', async () => {
+          await withUnauthenticatedClient(async (client) => {
+            await client.authenticate(ADMIN_TOKEN);
+            await expect(client.cacheStats()).resolves.toBeDefined();
+          });
+        });
+
+        it('rejects a wrong token on connect rather than half-opening', async () => {
+          const wrong = new MygramClient({ host: TEST_HOST, port: TEST_PORT, timeout: 5000, adminToken: 'wrong' });
+          await expect(wrong.connect()).rejects.toBeInstanceOf(ServerError);
+          expect(wrong.isConnected()).toBe(false);
+        });
+
+        it('authenticates every pooled connection', async () => {
+          const pool = new MygramPool({ connection: connectionConfig(15000), size: 2, keepAliveIntervalMs: 0 });
+          await pool.start();
+          try {
+            expect(pool.metrics().healthyConnections).toBe(2);
+            // An administrative command over a pooled connection only succeeds
+            // if that connection authenticated as it opened.
+            const stats = await pool.withClient((client) => client.cacheStats(), { idempotent: true });
+            expect(typeof stats.hits).toBe('number');
+          } finally {
+            await pool.close();
+          }
+        });
       });
     });
   });
