@@ -5,7 +5,7 @@
 ## 前提条件
 
 - Node.js 22.0.0 以上
-- Yarn 4.x（Volta で管理）
+- Yarn 4.x（mise で管理）
 - 動作中の MygramDB サーバー
 
 ## インストール
@@ -113,8 +113,19 @@ main();
 |--------|------|---------|-------------|
 | `host` | string | `'127.0.0.1'` | サーバーホスト名または IP アドレス |
 | `port` | number | `11016` | サーバーポート番号 |
-| `timeout` | number | `5000` | 接続タイムアウト（ミリ秒） |
+| `timeout` | number | `5000` | 通常コマンド1件のデッドライン（ミリ秒） |
+| `connectTimeout` | number | `timeout` と同じ | 接続と `AUTH` のデッドライン（ミリ秒） |
+| `dumpSaveTimeout` | number | `600000` | `DUMP SAVE` のデッドライン（ミリ秒） |
+| `dumpLoadTimeout` | number | `600000` | `DUMP LOAD` のデッドライン（ミリ秒） |
+| `dumpVerifyTimeout` | number | `600000` | `DUMP VERIFY` のデッドライン（ミリ秒） |
+| `optimizeTimeout` | number | `600000` | `OPTIMIZE` のデッドライン（ミリ秒） |
 | `recvBufferSize` | number | `65536` | 受信バッファサイズ（バイト） |
+| `maxResponseBytes` | number | `67108864` | 受け入れるレスポンスフレームの上限（バイト） |
+| `adminToken` | string | — | 接続のたびに `AUTH <token>` として送信（MygramDB v1.10+） |
+
+ダンプと `OPTIMIZE` はインデックス全体を走査するため、リクエストタイムアウトとは
+別のデッドラインを持ちます。これらのために `timeout` を延ばすと、通常のクエリの
+障害検知まで遅くなってしまいます。
 
 ### カスタム設定の例
 
@@ -127,12 +138,22 @@ const client = new MygramClient({
 });
 ```
 
+### 管理コマンド
+
+MygramDB v1.10 は `DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES` の実行前に、同一接続上での `AUTH` を要求します。`adminToken` を設定しておけば、再接続時も含めて接続のたびにクライアントが認証します。検索にトークンは不要です。
+
+```typescript
+const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
+await client.connect();
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+```
+
 ## エラーハンドリング
 
 ライブラリは、さまざまな失敗シナリオに対して特定のエラータイプを提供します：
 
 ```typescript
-import { MygramClient, ConnectionError, ProtocolError, TimeoutError } from 'mygramdb-client';
+import { MygramClient, ConnectionError, ServerError, TimeoutError } from 'mygramdb-client';
 
 try {
   await client.connect();
@@ -140,8 +161,9 @@ try {
 } catch (error) {
   if (error instanceof ConnectionError) {
     console.error('サーバーへの接続に失敗しました:', error.message);
-  } else if (error instanceof ProtocolError) {
-    console.error('サーバーがエラーを返しました:', error.message);
+  } else if (error instanceof ServerError) {
+    // MygramDB v1.10 以降は数値コードも返る。それ以前のサーバーでは undefined。
+    console.error(`サーバーがエラーを返しました (${error.code ?? 'コードなし'}):`, error.message);
   } else if (error instanceof TimeoutError) {
     console.error('リクエストがタイムアウトしました:', error.message);
   } else {
@@ -149,6 +171,8 @@ try {
   }
 }
 ```
+
+`ServerError` は `ProtocolError` を継承しているため、`ProtocolError` を捕捉している既存のコードでもサーバー側の拒否をすべて受け取れます。
 
 ## 次のステップ
 

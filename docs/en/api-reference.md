@@ -34,18 +34,62 @@ const client = new MygramClient({
 async connect(): Promise<void>
 ```
 
-Establishes a connection to the MygramDB server.
+Establishes a connection to the MygramDB server. When `ClientConfig.adminToken`
+is set, the client also sends `AUTH <token>` on the new connection and fails the
+connect if the server rejects it.
 
-**Returns:** Promise that resolves when connected
+**Returns:** Promise that resolves when connected (and authenticated)
 
 **Throws:**
 - `ConnectionError` - If connection fails
 - `TimeoutError` - If connection times out
+- `ServerError` - If the server rejects the administrative token
 
 **Example:**
 ```typescript
 await client.connect();
 ```
+
+### authenticate()
+
+```typescript
+async authenticate(token?: string): Promise<void>
+```
+
+Authenticates the current connection for administrative commands
+(MygramDB v1.10+).
+
+A v1.10 server gates `DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`,
+`OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and `SHOW VARIABLES` behind an `AUTH`
+issued on the same TCP connection, and refuses to start when its listener is not
+loopback and no token is configured. Ordinary `SEARCH` / `COUNT` / `GET` /
+`FACET` / `INFO` traffic never needs a token.
+
+Authentication is per connection, so it has to be repeated after any reconnect.
+Prefer setting `ClientConfig.adminToken`, which makes the client authenticate on
+every connect — including a reconnect performed by `autoReconnect` and every
+connection a `MygramPool` opens — over calling this method by hand.
+
+**Parameters:**
+- `token` (string, optional) - Token to send; defaults to `ClientConfig.adminToken`
+
+**Throws:**
+- `InputValidationError` - If no token is configured or supplied
+- `ServerError` - With `code === ErrorCode.PermissionDenied` if the token is rejected
+
+**Example:**
+```typescript
+// Preferred: authenticate on every connect, reconnect included
+const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
+await client.connect();
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+
+// Or authenticate an already-open connection
+await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
+```
+
+The TCP transport does not encrypt the token. Keep that listener on a trusted
+network or behind a terminating proxy.
 
 ### disconnect()
 
@@ -213,6 +257,10 @@ semantics that `search()`'s AND/NOT decomposition cannot express.
 const raw = convertSearchExpression('python OR (ruby AND rails)');
 const results = await client.searchRaw('articles', raw, { limit: 50 });
 ```
+
+`SearchRawOptions` covers only pagination and highlighting. To combine an
+expression with filters, sorting or fuzzy matching, use `search()` with
+[`queryMode: 'boolean'`](#querymode) instead (MygramDB v1.9+).
 
 ### searchRawWithHighlights()
 
@@ -533,11 +581,15 @@ await client.optimize('articles');
 ### dumpSave()
 
 ```typescript
-async dumpSave(filepath: string): Promise<string>
+async dumpSave(filepath?: string): Promise<string>
 ```
 
 Starts saving an index dump to `filepath` on the server. Resolves with the
-filepath being written. Use [`dumpStatus()`](#dumpstatus) to monitor progress.
+filepath being written. Omit `filepath` to write to the server's configured
+dump directory and default filename. Use [`dumpStatus()`](#dumpstatus) to
+monitor progress.
+
+Bounded by `ClientConfig.dumpSaveTimeout` rather than by the request timeout.
 
 ### dumpLoad()
 
@@ -761,29 +813,112 @@ The circuit-breaker state reported in the `breaker_state_change` event payload:
 
 ```typescript
 interface ClientConfig {
-  host?: string;           // Server hostname (default: '127.0.0.1')
-  port?: number;           // Server port (default: 11016)
-  timeout?: number;        // Connection timeout in ms (default: 5000)
-  recvBufferSize?: number; // Receive buffer size in bytes (default: 65536)
-  maxQueryLength?: number; // Maximum query expression length before validation fails (default: 128)
-  autoReconnect?: boolean; // Reconnect + resend once on a pre-write dead socket, pure-JS transport only (default: false)
+  host?: string;              // Server hostname (default: '127.0.0.1')
+  port?: number;              // Server port (default: 11016)
+  socketPath?: string;        // Unix socket path; takes precedence over host/port
+  timeout?: number;           // Deadline for one ordinary command in ms (default: 5000)
+  connectTimeout?: number;    // Deadline for connecting and AUTH in ms (default: same as timeout)
+  dumpSaveTimeout?: number;   // Deadline for DUMP SAVE in ms (default: 600000)
+  dumpLoadTimeout?: number;   // Deadline for DUMP LOAD in ms (default: 600000)
+  dumpVerifyTimeout?: number; // Deadline for DUMP VERIFY in ms (default: 600000)
+  optimizeTimeout?: number;   // Deadline for OPTIMIZE in ms (default: 600000)
+  recvBufferSize?: number;    // Receive buffer size in bytes (default: 65536)
+  maxResponseBytes?: number;  // Largest response frame accepted in bytes (default: 67108864)
+  maxQueryLength?: number;    // Maximum query expression length before validation fails (default: 128)
+  autoReconnect?: boolean;    // Reconnect + resend once on a pre-write dead socket, pure-JS transport only (default: false)
+  adminToken?: string;        // Sent as AUTH <token> on every connect (MygramDB v1.10+, default: none)
 }
 ```
+
+`DUMP SAVE`, `DUMP LOAD`, `DUMP VERIFY` and `OPTIMIZE` walk the whole index, so
+they get their own deadlines rather than the request timeout; raising `timeout`
+for their sake would slow down failure detection on ordinary queries.
+
+A response frame that grows past `maxResponseBytes` cannot be trusted or
+resynchronized, so the client closes the connection and rejects the pending
+command with a `ProtocolError`.
 
 ### SearchOptions
 
 ```typescript
 interface SearchOptions {
-  limit?: number;                    // Max results (default: 1000)
-  offset?: number;                   // Pagination offset (default: 0)
-  andTerms?: string[];               // Additional required terms
-  notTerms?: string[];               // Excluded terms
-  filters?: Record<string, string>;  // Filter conditions (column: value)
-  sortColumn?: string;               // Sort column (default: primary key)
-  sortDesc?: boolean;                // Sort descending (default: true)
-  fuzzy?: number;                    // Fuzzy edit distance (0 = exact)
-  highlight?: HighlightOptions;      // Enable highlighted snippets
+  queryMode?: QueryMode;         // How the server reads `query` (default: 'literal', MygramDB v1.9+)
+  limit?: number;                // Max results (default: 1000)
+  offset?: number;               // Pagination offset (default: 0)
+  andTerms?: string[];           // Additional required terms
+  notTerms?: string[];           // Excluded terms
+  filters?: FilterSpec;          // Filter conditions
+  sortColumn?: string;           // Sort column (default: primary key)
+  sortDesc?: boolean;            // Sort descending (default: true)
+  fuzzy?: number;                // Fuzzy edit distance (0 = exact)
+  highlight?: HighlightOptions;  // Enable highlighted snippets
 }
+```
+
+### QueryMode
+
+```typescript
+type QueryMode = 'literal' | 'boolean';
+```
+
+How the server interprets the search text (MygramDB v1.9+):
+
+- `literal` (default) — the text is a phrase. Reserved words such as `AND`, `OR`
+  and `NOT`, grouping parentheses and backslashes are quoted so they match as
+  ordinary characters.
+- `boolean` — the text is an expression, handed to the server's expression
+  parser so `AND`/`OR`/`NOT` and parentheses are operators.
+
+Literal is the default on every surface, so `alpha AND beta` keeps its meaning
+when an application moves between the TCP, HTTP and typed clients. Boolean mode
+is what lets an expression be combined with filters, sorting, fuzzy matching and
+highlighting — [`searchRaw()`](#searchraw) remains the compact expression-only
+entry point that takes none of those clauses.
+
+```typescript
+// Phrase search for the literal text "alpha AND beta"
+await client.search('articles', 'alpha AND beta');
+
+// Boolean expression combined with a typed filter
+await client.search('articles', 'alpha AND (xqz OR jkv)', {
+  queryMode: 'boolean',
+  filters: { status: 'published' }
+});
+```
+
+### FilterSpec
+
+```typescript
+type FilterOperator = '=' | '!=' | '<>' | '>' | '>=' | '<' | '<=';
+
+type FilterValue = string | { op: FilterOperator; value: string };
+
+interface FilterCondition {
+  column: string;
+  op?: FilterOperator;  // Defaults to '='
+  value: string;
+}
+
+type FilterSpec = Record<string, FilterValue> | FilterCondition[];
+```
+
+FILTER clauses accept two shapes. The record form is keyed by column and holds
+at most one condition per column; the array form is required when one column
+carries two conditions, such as a bounded range. Comparison operators other than
+`=` require MygramDB v1.9+.
+
+```typescript
+// Equality (every MygramDB version)
+filters: { status: 'active' }
+
+// Single comparison
+filters: { price: { op: '>=', value: '100' } }
+
+// Range: two conditions on one column
+filters: [
+  { column: 'price', op: '>=', value: '100' },
+  { column: 'price', op: '<=', value: '500' }
+]
 ```
 
 ### SearchRawOptions
@@ -800,9 +935,10 @@ interface SearchRawOptions {
 
 ```typescript
 interface CountOptions {
-  andTerms?: string[];               // Additional required terms
-  notTerms?: string[];               // Excluded terms
-  filters?: Record<string, string>;  // Filter conditions (column: value)
+  queryMode?: QueryMode;  // How the server reads `query` (default: 'literal', MygramDB v1.9+)
+  andTerms?: string[];    // Additional required terms
+  notTerms?: string[];    // Excluded terms
+  filters?: FilterSpec;   // Filter conditions
 }
 ```
 
@@ -821,11 +957,13 @@ interface HighlightOptions {
 
 ```typescript
 interface FacetOptions {
-  query?: string;                    // Optional query scoping the aggregation
-  andTerms?: string[];               // Additional required terms
-  notTerms?: string[];               // Excluded terms
-  filters?: Record<string, string>;  // Filter conditions (column: value)
-  limit?: number;                    // Max facet values (0 = no limit)
+  query?: string;         // Optional query scoping the aggregation
+  queryMode?: QueryMode;  // How the server reads `query` (default: 'literal', MygramDB v1.9+)
+  andTerms?: string[];    // Additional required terms
+  notTerms?: string[];    // Excluded terms
+  filters?: FilterSpec;   // Filter conditions
+  limit?: number;         // Max facet values in the page (0 = no limit)
+  offset?: number;        // Distinct values to skip before the page (MygramDB v1.9+)
 }
 ```
 
@@ -833,13 +971,24 @@ interface FacetOptions {
 
 ```typescript
 interface FacetResponse {
-  results: FacetValue[]; // Facet values in server-defined order
+  results: FacetValue[];  // Facet values in the returned page, in server-defined order
+  totalCount: number;     // Distinct values before OFFSET/LIMIT (MygramDB v1.10+)
 }
 
 interface FacetValue {
   value: string;  // Distinct value of the facet column
   count: number;  // Documents holding this value
 }
+```
+
+`totalCount` is how many distinct values exist in total, which is what a pager
+needs; `results.length` is only the size of the returned page. Against a server
+older than v1.10, which does not report a total, `totalCount` falls back to
+`results.length`.
+
+```typescript
+const page = await client.facet('articles', 'category', { limit: 20, offset: 40 });
+console.log(`showing ${page.results.length} of ${page.totalCount} categories`);
 ```
 
 ### SearchResponse
@@ -886,31 +1035,113 @@ Typical triggers include CR/LF characters inside `table`, `query`, or filter val
 and queries whose combined expression length exceeds `ClientConfig.maxQueryLength`.
 Adjust your input or increase the limit if longer expressions are required.
 
+### ServerError
+
+```typescript
+class ServerError extends ProtocolError {
+  readonly code: number | undefined;  // Numeric code, undefined against a pre-v1.10 server
+  readonly rawFrame: string;          // The complete ERROR frame as received
+}
+```
+
+Thrown when the server rejects a command. MygramDB v1.10+ prefixes every `ERROR`
+frame with a numeric code (`ERROR 4007 Table not found`), so `code` carries that
+value and `message` holds only the human-readable remainder. Against an older
+server the frame has no code, `code` is `undefined`, and `message` is the whole
+payload.
+
+`ServerError` extends `ProtocolError`, so code written against earlier releases —
+which saw every server-side rejection as a `ProtocolError` — keeps working. New
+code should branch on `code` rather than on message text.
+
+```typescript
+import { ErrorCode, ServerError } from 'mygramdb-client';
+
+try {
+  await client.search('missing_table', 'hello');
+} catch (error) {
+  if (error instanceof ServerError && error.code === ErrorCode.TableNotFound) {
+    // handle the unknown table
+  }
+}
+```
+
+### ErrorCode
+
+The numeric error codes a MygramDB v1.10+ server can send, exported as a const
+object mirroring the server's own enumeration. Codes are grouped by range:
+general (0-999), configuration (1000-1999), MySQL (2000-2999), query parsing
+(3000-3999), index/search (4000-4999), storage (5000-5999), network/server
+(6000-6999), client (7000-7999) and cache (8000-8999).
+
+The ones a client branches on most often:
+
+| Code | Name | Meaning |
+| --- | --- | --- |
+| 7 | `PermissionDenied` | Administrative command issued without a successful `AUTH` |
+| 2017 | `MySQLUndecodableBinlogEvent` | Replication stopped on an event this server build cannot decode |
+| 3006 | `QueryInvalidFilter` | Malformed filter |
+| 3008 / 3009 | `QueryInvalidLimit` / `QueryInvalidOffset` | `limit` or `offset` out of range |
+| 4007 | `TableNotFound` | Unknown table |
+| 6028 | `ServerLoading` | Temporarily unavailable while loading a dump |
+| 6029 | `ServerNotReady` | Not ready to serve the requested operation |
+| 6030 | `ServerBusy` | Rate limited, or a long operation holds the table |
+
+Three helpers classify a code without hard-coding the sets:
+
+```typescript
+import { isAuthRequiredErrorCode, isConnectionLostErrorCode, isRetryableErrorCode } from 'mygramdb-client';
+
+isRetryableErrorCode(error.code);        // transient — retry after a backoff
+isConnectionLostErrorCode(error.code);   // reconnect (and re-authenticate) first
+isAuthRequiredErrorCode(error.code);     // needs an admin token
+```
+
 ### ServerInfo
 
 ```typescript
 interface ServerInfo {
-  version: string;           // Server version
-  uptimeSeconds: number;     // Server uptime in seconds
-  totalRequests: number;     // Cumulative requests served
-  activeConnections: number; // Currently active connections
-  indexSizeBytes: number;    // Index size in bytes
-  docCount: number;          // Total document count
-  tables: string[];          // List of table names
+  version: string;            // Server version
+  uptimeSeconds: number;      // Server uptime in seconds
+  totalRequests: number;      // Cumulative requests served
+  activeConnections: number;  // Currently active connections
+  indexSizeBytes: number;     // Index size in bytes
+  docCount: number;           // Total document count
+  tables: string[];           // List of table names
+  dataInitialized?: boolean;  // Every configured table finished its initial load (MygramDB v1.10+)
+  ready?: boolean;            // Ready to serve queries (MygramDB v1.10+)
 }
 ```
+
+`dataInitialized` and `ready` are evaluated from the same inputs as the HTTP
+health endpoint, so a TCP-only deployment can gate traffic without polling HTTP.
+Both are `undefined` when the server does not report them.
 
 ### ReplicationStatus
 
 ```typescript
 interface ReplicationStatus {
-  running: boolean;          // Is replication running
-  gtid: string;              // Current GTID position
-  statusStr: string;         // Raw status string
-  processedEvents?: number;  // Events processed so far (MygramDB v1.6+)
-  queueSize?: number;        // Replication queue size, present while running (MygramDB v1.6+)
+  running: boolean;                  // Is replication running
+  gtid: string;                      // Current GTID position
+  statusStr: string;                 // Raw status string
+  state?: ReplicationState;          // running | stopped | failed | not_configured
+  processedEvents?: number;          // Events processed so far (MygramDB v1.6+)
+  queueSize?: number;                // Replication queue size, present while running (MygramDB v1.6+)
+  crcErrors?: number;                // Binlog events whose checksum failed (MygramDB v1.10+)
+  schemaIncompatible?: boolean;      // Stopped because the MySQL schema no longer matches (MygramDB v1.10+)
+  lastErrorCode?: number;            // Error code of the last failure (MygramDB v1.10+)
+  lastError?: string;                // Message for lastErrorCode (MygramDB v1.10+)
+  lastAppliedUnixtime?: number;      // Unix time the last event was applied (MygramDB v1.10+)
+  secondsSinceLastApplied?: number;  // Replication lag in seconds (MygramDB v1.10+)
 }
 ```
+
+`state` separates a failure from a requested stop, which `running: false` alone
+cannot express. `lastErrorCode` uses the same table as [`ErrorCode`](#errorcode)
+and is left undefined while no failure is recorded; the server clears it once a
+start succeeds. `secondsSinceLastApplied` is the value to alert on: it is
+stamped where the replication position advances, so it measures real progress
+rather than mere connectivity.
 
 ### DebugInfo
 
@@ -940,31 +1171,62 @@ interface DebugInfo {
 
 ```typescript
 interface CacheStats {
-  enabled: boolean;         // Whether the cache is enabled
-  maxMemoryMb: number;      // Maximum cache memory in MB
-  currentMemoryMb: number;  // Current cache memory usage in MB
-  entries: number;          // Number of cached entries
-  hits: number;             // Cache hit count
-  misses: number;           // Cache miss count
-  hitRate: number;          // Cache hit rate percentage
-  evictions: number;        // Number of cache evictions
-  ttlSeconds: number;       // Cache TTL in seconds
+  enabled: boolean;                       // Whether the cache is enabled
+  totalQueries: number;                   // Queries that consulted the cache
+  hits: number;                           // Cache hit count
+  misses: number;                         // Cache miss count
+  hitRate: number;                        // Hit ratio in the range 0-1
+  entries: number;                        // Number of cached entries
+  currentMemoryBytes: number;             // Memory held by cached entries
+  currentMemoryMb: number;                // currentMemoryBytes expressed in MB
+  invalidationIndexMemoryBytes: number;   // Memory held by the invalidation reverse indexes
+  invalidationQueueMemoryBytes: number;   // Memory held by pending invalidations (MygramDB v1.10+)
+  accountedMemoryBytes: number;           // Total memory charged against the cache budget
+  evictions: number;                      // Entries evicted for capacity or memory
+  ttlExpirations: number;                 // Entries dropped on TTL expiry
+  rejections: number;                     // Insertions refused, for any reason
+  rejectionOversize: number;              // Refused: entry over the per-entry size limit
+  rejectionMemoryBudget: number;          // Refused: memory budget exhausted
+  rejectionDuplicate: number;             // Refused: an equivalent entry was present
+  staleEntryRemovals: number;             // Entries removed after failing a staleness check
+  decompressionFailures: number;          // Entries discarded on a decompression failure
+  staleLruEntries: number;                // LRU nodes pointing at entries already gone
+  invalidationsImmediate: number;         // Invalidations applied on the row event
+  invalidationsDeferred: number;          // Invalidations queued for the background worker
+  invalidationsBatches: number;           // Batches the background worker processed
+  avgHitTimeMs?: number;                  // Mean time to serve a hit; undefined until the first hit
+  avgMissTimeMs?: number;                 // Mean time to serve a miss; undefined until the first miss
+  totalTimeSavedMs: number;               // Execution time avoided by serving hits
 }
 ```
+
+`hitRate` is a ratio between 0 and 1, not a percentage. The maximum cache size
+and the TTL are configuration rather than statistics and are not part of this
+response; read them from `SHOW VARIABLES`, or from the `cache_ttl_seconds` field
+of `INFO`.
 
 ### DumpStatus
 
 ```typescript
 interface DumpStatus {
-  status: string;           // saving, loading, idle, completed, failed
-  filepath: string;         // File path of the dump
-  tablesTotal: number;      // Total number of tables
-  tablesProcessed: number;  // Number of tables processed
-  currentTable: string;     // Currently processing table name
-  elapsedSeconds: number;   // Elapsed time in seconds
-  error?: string;           // Error message when status is failed
+  status: string;                    // IDLE, SAVING, LOADING, COMPLETED or FAILED
+  filepath: string;                  // File path of the dump
+  tablesTotal: number;               // Total number of tables
+  tablesProcessed: number;           // Number of tables processed
+  currentTable: string;              // Currently processing table name
+  elapsedSeconds: number;            // Elapsed time in seconds
+  error?: string;                    // Error message when status is FAILED
+  saveInProgress: boolean;           // Whether a DUMP SAVE is running right now
+  loadInProgress: boolean;           // Whether a DUMP LOAD is running right now
+  replicationPausedForDump: boolean; // Whether replication is paused to hold the index still
+  resultFilepath?: string;           // Path actually written, once a save completes
 }
 ```
+
+`status` is uppercase, as the server reports it. A server running without
+progress tracking reports `SAVE_IN_PROGRESS` / `LOAD_IN_PROGRESS` / `IDLE`
+instead, which is why the boolean flags are the reliable way to tell whether an
+operation is in flight.
 
 ## Error Types
 

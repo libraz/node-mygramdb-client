@@ -118,10 +118,15 @@ console.log(parsed);
 // {
 //   requiredTerms: ['golang'],
 //   excludedTerms: ['old'],
-//   optionalTerms: ['tutorial', 'guide'],
-//   rawExpression: '+golang -old (tutorial OR guide)'
+//   optionalTerms: [],
+//   rawExpression: '(tutorial OR guide)'
 // }
 ```
+
+Every unprefixed term is required, exactly as if it carried `+`; `golang rust`
+means both words must appear. `rawExpression` holds only the OR / parenthesized
+part of the input, so composing it with the terms never duplicates or drops
+anything.
 
 ### convertSearchExpression()
 
@@ -141,7 +146,7 @@ Converts a web-style search expression into MygramDB query format.
 import { convertSearchExpression } from 'mygramdb-client';
 
 convertSearchExpression('golang tutorial');
-// Returns: 'golang OR tutorial'
+// Returns: 'golang AND tutorial'
 
 convertSearchExpression('+golang +tutorial');
 // Returns: 'golang AND tutorial'
@@ -150,11 +155,20 @@ convertSearchExpression('+golang -old');
 // Returns: 'golang AND NOT old'
 
 convertSearchExpression('python OR ruby');
-// Returns: 'python OR ruby'
+// Returns: '(python OR ruby)'
 
 convertSearchExpression('+golang +(tutorial OR guide)');
-// Returns: '+golang +(tutorial OR guide)'
+// Returns: 'golang AND (tutorial OR guide)'
+
+convertSearchExpression('golang python OR ruby');
+// Returns: 'golang AND (python OR ruby)'
 ```
+
+The result is always a MygramDB boolean expression, never web syntax passed
+through: `+` and `-` are resolved into `AND` and `AND NOT`, and an OR chain is
+parenthesized so it binds the way the user wrote it. Pass the result to
+[`searchRaw()`](./api-reference.md#searchraw), or to `search()` with
+`queryMode: 'boolean'`.
 
 ### simplifySearchExpression()
 
@@ -186,27 +200,29 @@ console.log(notTerms);  // ['old', 'deprecated']
 ### hasComplexExpression()
 
 ```typescript
-function hasComplexExpression(expression: string): boolean
+function hasComplexExpression(expr: SearchExpression): boolean
 ```
 
-Checks if the expression contains complex syntax (OR, grouping) that cannot be simplified.
+Checks whether a parsed expression contains OR / grouping, which
+[`simplifySearchExpression()`](#simplifysearchexpression) cannot represent.
+It takes the parsed object, not the source string.
 
 **Parameters:**
-- `expression` (string) - Web-style search expression
+- `expr` (SearchExpression) - A parsed expression
 
 **Returns:** `true` if complex, `false` if simple
 
 **Example:**
 ```typescript
-import { hasComplexExpression } from 'mygramdb-client';
+import { hasComplexExpression, parseSearchExpression } from 'mygramdb-client';
 
-hasComplexExpression('+golang tutorial -old');
+hasComplexExpression(parseSearchExpression('+golang tutorial -old'));
 // Returns: false (simple expression)
 
-hasComplexExpression('golang OR rust');
+hasComplexExpression(parseSearchExpression('golang OR rust'));
 // Returns: true (has OR operator)
 
-hasComplexExpression('+(tutorial OR guide)');
+hasComplexExpression(parseSearchExpression('+(tutorial OR guide)'));
 // Returns: true (has grouping)
 ```
 
@@ -270,11 +286,12 @@ const client = new MygramClient();
 await client.connect();
 
 const userInput = '+golang +(tutorial OR guide) -old';
+const parsed = parseSearchExpression(userInput);
 
-if (hasComplexExpression(userInput)) {
-  // Use converted query directly
-  const query = convertSearchExpression(userInput);
-  const results = await client.search('articles', query);
+if (hasComplexExpression(parsed)) {
+  // Boolean expression: send it verbatim with searchRaw(), because search()
+  // quotes its query as literal text.
+  const results = await client.searchRaw('articles', toQueryString(parsed));
 } else {
   // Use simplified terms
   const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
@@ -292,9 +309,10 @@ Create a helper function that automatically detects the expression type:
 ```typescript
 import {
   MygramClient,
-  convertSearchExpression,
-  simplifySearchExpression,
   hasComplexExpression,
+  parseSearchExpression,
+  simplifySearchExpression,
+  toQueryString,
   SearchOptions,
 } from 'mygramdb-client';
 
@@ -304,10 +322,11 @@ async function smartSearch(
   expression: string,
   options: SearchOptions = {}
 ) {
-  if (hasComplexExpression(expression)) {
-    // Complex expression: convert and search
-    const query = convertSearchExpression(expression);
-    return client.search(table, query, options);
+  const parsed = parseSearchExpression(expression);
+
+  if (hasComplexExpression(parsed)) {
+    // Complex expression: send the boolean form and let the server parse it.
+    return client.search(table, toQueryString(parsed), { ...options, queryMode: 'boolean' });
   }
 
   // Simple expression: extract terms and use options
@@ -361,9 +380,9 @@ const results = await client.search('articles', mainTerm, { andTerms, notTerms }
 const expression = 'python OR ruby OR javascript';
 const query = convertSearchExpression(expression);
 
-// query: 'python OR ruby OR javascript'
+// query: '(python OR ruby OR javascript)'
 
-const results = await client.search('articles', query);
+const results = await client.searchRaw('articles', query);
 ```
 
 ### Example 4: Complex Query
@@ -372,9 +391,9 @@ const results = await client.search('articles', query);
 const expression = '+backend +(golang OR rust) -php "best practices"';
 const query = convertSearchExpression(expression);
 
-// query: '+backend +(golang OR rust) -php "best practices"'
+// query: 'backend AND (golang OR rust) AND "best practices" AND NOT php'
 
-const results = await client.search('articles', query);
+const results = await client.searchRaw('articles', query);
 ```
 
 ### Example 5: Phrase Search
@@ -399,10 +418,10 @@ const results = await client.search('articles', mainTerm, { andTerms, notTerms }
 
 ```typescript
 interface SearchExpression {
-  requiredTerms: string[];   // Terms marked with +
+  requiredTerms: string[];   // Terms marked with +, and every unprefixed term
   excludedTerms: string[];   // Terms marked with -
-  optionalTerms: string[];   // Terms without prefix
-  rawExpression: string;     // Original expression, retained for OR/grouping
+  optionalTerms: string[];   // Always empty; retained so an externally built object still works
+  rawExpression: string;     // Only the OR / parenthesized part of the input
 }
 ```
 
@@ -412,7 +431,7 @@ interface SearchExpression {
 
 1. **Tokenization**: The expression is split into tokens (terms, operators, parentheses)
 2. **Normalization**: Full-width spaces and characters are normalized to ASCII
-3. **Classification**: Tokens are classified as required (+), excluded (-), or optional
+3. **Classification**: Tokens are classified as required (`+` or no prefix) or excluded (`-`)
 4. **Grouping**: Parentheses are parsed to identify OR groups
 5. **Conversion**: The parsed expression is converted to MygramDB query format
 

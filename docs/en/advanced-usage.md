@@ -292,12 +292,91 @@ if (health.healthy) {
 }
 ```
 
+## Administrative Authentication
+
+MygramDB v1.10 gates administrative commands — `DUMP *`, `REPLICATION *`,
+`SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and
+`SHOW VARIABLES` — behind an `AUTH` issued on the same TCP connection, and
+refuses to start when its listener is not loopback and no token is configured.
+Ordinary `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` traffic never needs one.
+
+Authentication is per connection, so it has to be repeated after every
+reconnect. Set `adminToken` on the `ClientConfig` and the client handles that
+for you — on the first connect, on an `autoReconnect` recovery, and on every
+connection a `MygramPool` opens:
+
+```typescript
+const client = new MygramClient({
+  host: 'localhost',
+  port: 11016,
+  autoReconnect: true,
+  adminToken: process.env.MYGRAM_ADMIN_TOKEN
+});
+
+await client.connect();          // AUTH is sent as part of connecting
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+```
+
+The same field flows through the pool's connection settings:
+
+```typescript
+const pool = new MygramPool({
+  connection: { host: 'localhost', port: 11016, adminToken: process.env.MYGRAM_ADMIN_TOKEN },
+  size: 16
+});
+```
+
+A rejected token fails the connect outright rather than handing back a
+half-usable connection, which lets the pool discard the slot instead of serving
+administrative commands that would all fail. A command issued without awaiting
+`connect()` still goes out behind the `AUTH`, never ahead of it.
+
+The TCP transport does not encrypt the token, so keep that listener on a trusted
+network or behind a terminating proxy. Read the token from the environment
+rather than committing it.
+
+To authenticate a connection that is already open, call `authenticate()`
+directly:
+
+```typescript
+await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
+```
+
+## Branching on Server Error Codes
+
+MygramDB v1.10 prefixes every `ERROR` frame with a numeric code, so a client can
+branch on the code instead of matching message text. Server-side rejections
+arrive as a `ServerError` (a subclass of `ProtocolError`, so existing
+`catch (error instanceof ProtocolError)` code is unaffected) carrying `code` and
+the raw frame:
+
+```typescript
+import { ErrorCode, ServerError, isAuthRequiredErrorCode } from 'mygramdb-client';
+
+try {
+  await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+} catch (error) {
+  if (error instanceof ServerError) {
+    if (isAuthRequiredErrorCode(error.code)) {
+      await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
+      // retry the command
+    } else if (error.code === ErrorCode.ServerBusy) {
+      // another long operation holds the table — back off
+    }
+  }
+}
+```
+
+Against a server older than v1.10 the frame carries no code, so `error.code` is
+`undefined` and the classification helpers all return `false`. Keep a
+message-independent fallback if you must support both.
+
 ## Retry Logic
 
 Implement automatic retry for transient failures:
 
 ```typescript
-import { MygramClient, TimeoutError, ConnectionError } from 'mygramdb-client';
+import { MygramClient, ServerError, TimeoutError, ConnectionError, isRetryableErrorCode } from 'mygramdb-client';
 
 async function searchWithRetry(
   client: MygramClient,
@@ -314,10 +393,12 @@ async function searchWithRetry(
     } catch (error) {
       lastError = error as Error;
 
-      // Only retry on timeout or connection errors
+      // Retry on transport failures, and on the transient server-side
+      // conditions a v1.10 server reports by code (loading, not ready, busy).
       if (
         error instanceof TimeoutError ||
-        error instanceof ConnectionError
+        error instanceof ConnectionError ||
+        (error instanceof ServerError && isRetryableErrorCode(error.code))
       ) {
         if (attempt < maxRetries) {
           console.log(`Attempt ${attempt} failed, retrying in ${retryDelay}ms...`);

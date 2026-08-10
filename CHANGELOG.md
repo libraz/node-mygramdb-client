@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Tracks MygramDB **v1.9.0** and **v1.10.0**. Every addition is backward
+compatible with older servers: an `ERROR` frame without a code, an `INFO`
+without readiness fields and a `FACET` header without a total are all still
+parsed, and a client that sets no `adminToken` behaves exactly as before.
+
+### Added
+
+- **Administrative authentication** — `ClientConfig.adminToken` sends
+  `AUTH <token>` on every connect, including an `autoReconnect` recovery and
+  every connection a `MygramPool` opens. `authenticate(token?)` authenticates an
+  already-open connection. MygramDB v1.10 gates `DUMP *`, `REPLICATION *`,
+  `SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and
+  `SHOW VARIABLES` behind it; ordinary search traffic needs no token. A rejected
+  token fails the connect rather than returning a half-usable connection, and a
+  command issued without awaiting `connect()` is dispatched behind the `AUTH`,
+  never ahead of it.
+- **Typed server errors** — a server rejection now throws `ServerError`, which
+  carries the numeric `code` MygramDB v1.10 puts on every `ERROR` frame plus the
+  `rawFrame` as received, with `message` holding only the human-readable
+  remainder. `ServerError` extends `ProtocolError`, so code that catches
+  `ProtocolError` is unaffected. The full `ErrorCode` enumeration is exported
+  alongside `isRetryableErrorCode()`, `isConnectionLostErrorCode()` and
+  `isAuthRequiredErrorCode()` for classifying a code without hard-coding sets.
+- **Boolean query mode** — `SearchOptions.queryMode` (also on `CountOptions` and
+  `FacetOptions`) selects `literal` (default) or `boolean`, so an expression such
+  as `alpha AND (xqz OR jkv)` can be combined with filters, sorting, fuzzy
+  matching and highlighting. `searchRaw()` remains the expression-only entry
+  point.
+- **Comparison filters** — `filters` accepts `=`, `!=`, `<>`, `>`, `>=`, `<` and
+  `<=` through either `{ column: { op, value } }` or a `FilterCondition[]`, the
+  latter required when one column carries two conditions such as a range. A bare
+  `{ column: value }` record still means equality.
+- **Facet pagination** — `FacetOptions.offset` pages through distinct values and
+  `FacetResponse.totalCount` reports how many exist before OFFSET and LIMIT,
+  falling back to the page size against a server that does not send a total.
+- **Readiness on `INFO`** — `ServerInfo.dataInitialized` and `ServerInfo.ready`
+  expose the readiness MygramDB v1.10 reports on the TCP surface, so a TCP-only
+  deployment can gate traffic without polling the HTTP health endpoint. Both are
+  `undefined` when the server omits them.
+- **Replication diagnostics** — `ReplicationStatus` gains `state`, which
+  separates a failure from a requested stop, plus `crcErrors`,
+  `schemaIncompatible`, `lastErrorCode`, `lastError`, `lastAppliedUnixtime` and
+  `secondsSinceLastApplied`. The last is the value to alert on: MygramDB v1.10
+  stamps it where the replication position advances, so it measures progress
+  rather than connectivity.
+- **Operation-specific deadlines** — `connectTimeout`, `dumpSaveTimeout`,
+  `dumpLoadTimeout`, `dumpVerifyTimeout` and `optimizeTimeout` bound the
+  operations that legitimately outrun a request timeout, so `timeout` can stay
+  short enough to detect a stalled query.
+- **Response frame cap** — `maxResponseBytes` (64 MiB by default) bounds a
+  single response. A frame that outgrows it cannot be resynchronized, so the
+  connection is closed and the pending command rejected with a `ProtocolError`
+  instead of the buffer growing without limit.
+- **Dump status detail** — `DumpStatus` gains `saveInProgress`,
+  `loadInProgress`, `replicationPausedForDump` and `resultFilepath`.
+- `dumpSave()` accepts no argument, writing to the server's configured dump
+  directory and default filename.
+
+### Fixed
+
+- Literal search text now quotes standalone protocol keywords (`AND`, `OR`,
+  `NOT`, `FILTER`, `SORT`, `LIMIT`, `OFFSET`, `HIGHLIGHT`, `FUZZY`, `FACET`,
+  `ORDER`), parentheses and backslashes, matching the reference C++ client's
+  `EscapeQueryString`. Searching for the text `AND`, for `foo(bar)` or for a
+  value containing `\` previously reached the server as clause keywords, an
+  unbalanced group or an escape sequence rather than as literal text.
+- `sortDesc: false` without a `sortColumn` now emits `SORT ASC`. It was
+  previously dropped, so an explicit request for ascending primary-key order
+  silently returned descending results.
+- Search results and documents now decode the quoting the server applies to a
+  primary key or string column value that is empty or contains whitespace, a
+  quote, a backslash or a control character. Such a value was previously split
+  on its spaces into several results, or surfaced with its quotes and escape
+  sequences intact. A `GET` column value containing `=` is no longer truncated
+  at the first one.
+- `CACHE STATS` is parsed against the field names the server actually emits.
+  Every counter except the hit rate read a key that has never been on the wire,
+  so `cacheStats()` reported zeros. `CacheStats` is now the full typed
+  statistics surface, `hitRate` is documented as the 0–1 ratio the server
+  sends, and `maxMemoryMb` / `ttlSeconds` are gone: they are configuration, not
+  statistics, and never appeared in this response.
+- Unprefixed terms in a web-style search expression combine with `AND` rather
+  than `OR`, matching the documented implicit-AND semantics and the reference
+  C++ parser — `golang tutorial` searched for either word instead of both.
+  `convertSearchExpression()` also returns a real boolean expression for an
+  input carrying OR or grouping; it previously echoed the web syntax back
+  verbatim, `+` and `-` included, and dropped any term sitting outside the
+  group.
+
+### Changed
+
+- Toolchain and development dependencies refreshed. TypeScript stays on the 5.x
+  line: TypeScript 7 removed the JavaScript Compiler API that `vite-plugin-dts`
+  needs to emit declarations.
+
 ## [1.4.0] - 2026-07-10
 
 Adds a built-in connection pool with resilience controls for high-throughput

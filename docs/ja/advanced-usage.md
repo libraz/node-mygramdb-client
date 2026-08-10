@@ -248,12 +248,72 @@ if (health.healthy) {
 }
 ```
 
+## 管理コマンドの認証
+
+MygramDB v1.10 は管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）を、同一TCP接続上で発行した `AUTH` の背後に置きます。またリスナがループバック以外でトークン未設定の場合、サーバーは起動を拒否します。通常の `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` にトークンは不要です。
+
+認証は接続単位なので、再接続のたびにやり直す必要があります。`ClientConfig` の `adminToken` を設定すれば、初回接続時も、`autoReconnect` によるリカバリ時も、`MygramPool` が開く各接続でも、クライアントが自動で処理します。
+
+```typescript
+const client = new MygramClient({
+  host: 'localhost',
+  port: 11016,
+  autoReconnect: true,
+  adminToken: process.env.MYGRAM_ADMIN_TOKEN
+});
+
+await client.connect();          // 接続処理の一部として AUTH が送信される
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+```
+
+プールの接続設定にも同じフィールドがそのまま流れます。
+
+```typescript
+const pool = new MygramPool({
+  connection: { host: 'localhost', port: 11016, adminToken: process.env.MYGRAM_ADMIN_TOKEN },
+  size: 16
+});
+```
+
+トークンが拒否された場合、中途半端に使える接続を返すのではなく接続自体を失敗させます。これにより、管理コマンドがすべて失敗する接続を配るのではなく、プールがそのスロットを破棄できます。`connect()` を await せずに発行したコマンドも、`AUTH` より先に出ることはなく、必ずその後ろに並びます。
+
+TCPトランスポートはトークンを暗号化しません。このリスナは信頼できるネットワーク内か、TLS終端プロキシの背後に置いてください。トークンはコミットせず環境変数から読み込みます。
+
+すでに開いている接続を認証する場合は `authenticate()` を直接呼びます。
+
+```typescript
+await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
+```
+
+## サーバーエラーコードによる分岐
+
+MygramDB v1.10 はすべての `ERROR` フレームに数値コードを前置します。これによりクライアントはメッセージ文字列の照合ではなくコードで分岐できます。サーバー側の拒否は `ServerError`（`ProtocolError` のサブクラスなので、既存の `catch (error instanceof ProtocolError)` は影響を受けません）として届き、`code` と生フレームを保持します。
+
+```typescript
+import { ErrorCode, ServerError, isAuthRequiredErrorCode } from 'mygramdb-client';
+
+try {
+  await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+} catch (error) {
+  if (error instanceof ServerError) {
+    if (isAuthRequiredErrorCode(error.code)) {
+      await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
+      // コマンドをリトライする
+    } else if (error.code === ErrorCode.ServerBusy) {
+      // 別の長時間処理がテーブルを保持中 — バックオフする
+    }
+  }
+}
+```
+
+v1.10 より前のサーバーではフレームにコードが付かないため、`error.code` は `undefined` となり、分類ヘルパーはすべて `false` を返します。両方をサポートする必要がある場合は、メッセージに依存しないフォールバックを残してください。
+
 ## リトライロジック
 
 一時的な障害に対する自動リトライを実装します：
 
 ```typescript
-import { MygramClient, TimeoutError, ConnectionError } from 'mygramdb-client';
+import { MygramClient, ServerError, TimeoutError, ConnectionError, isRetryableErrorCode } from 'mygramdb-client';
 
 async function searchWithRetry(
   client: MygramClient,
@@ -270,10 +330,12 @@ async function searchWithRetry(
     } catch (error) {
       lastError = error as Error;
 
-      // Only retry on timeout or connection errors
+      // Retry on transport failures, and on the transient server-side
+      // conditions a v1.10 server reports by code (loading, not ready, busy).
       if (
         error instanceof TimeoutError ||
-        error instanceof ConnectionError
+        error instanceof ConnectionError ||
+        (error instanceof ServerError && isRetryableErrorCode(error.code))
       ) {
         if (attempt < maxRetries) {
           console.log(`Attempt ${attempt} failed, retrying in ${retryDelay}ms...`);

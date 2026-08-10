@@ -34,18 +34,51 @@ const client = new MygramClient({
 async connect(): Promise<void>
 ```
 
-MygramDBサーバーへの接続を確立します。
+MygramDBサーバーへの接続を確立します。`ClientConfig.adminToken` を設定している場合は、確立した接続上で `AUTH <token>` も送信し、サーバーに拒否されたら接続自体を失敗させます。
 
-**戻り値:** 接続完了時に解決されるPromise
+**戻り値:** 接続（および認証）完了時に解決されるPromise
 
 **例外:**
 - `ConnectionError` - 接続に失敗した場合
 - `TimeoutError` - 接続がタイムアウトした場合
+- `ServerError` - サーバーが管理トークンを拒否した場合
 
 **例:**
 ```typescript
 await client.connect();
 ```
+
+### authenticate()
+
+```typescript
+async authenticate(token?: string): Promise<void>
+```
+
+現在の接続を管理コマンド用に認証します（MygramDB v1.10+）。
+
+v1.10 のサーバーは `DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES` を、同一TCP接続上で発行した `AUTH` の背後に置きます。またリスナがループバック以外でトークン未設定の場合、サーバーは起動を拒否します。通常の `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` にトークンは不要です。
+
+認証は接続単位なので、再接続のたびにやり直す必要があります。手動で呼ぶより `ClientConfig.adminToken` の設定を推奨します。設定しておけば、`autoReconnect` による再接続や `MygramPool` が開く各接続も含め、接続のたびに自動で認証されます。
+
+**パラメータ:**
+- `token`（string、省略可） - 送信するトークン。省略時は `ClientConfig.adminToken`
+
+**例外:**
+- `InputValidationError` - トークンが設定も指定もされていない場合
+- `ServerError` - トークンが拒否された場合（`code === ErrorCode.PermissionDenied`）
+
+**例:**
+```typescript
+// 推奨: 再接続を含め接続のたびに認証する
+const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
+await client.connect();
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+
+// すでに開いている接続を認証する場合
+await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
+```
+
+TCPトランスポートはトークンを暗号化しません。このリスナは信頼できるネットワーク内か、TLS終端プロキシの背後に置いてください。
 
 ### disconnect()
 
@@ -213,6 +246,8 @@ async searchRaw(
 const raw = convertSearchExpression('python OR (ruby AND rails)');
 const results = await client.searchRaw('articles', raw, { limit: 50 });
 ```
+
+`SearchRawOptions` が扱うのはページネーションとハイライトだけです。式にフィルタ・ソート・あいまい検索を組み合わせる場合は、代わりに `search()` を [`queryMode: 'boolean'`](#querymode) で使ってください（MygramDB v1.9+）。
 
 ### searchRawWithHighlights()
 
@@ -533,11 +568,15 @@ await client.optimize('articles');
 ### dumpSave()
 
 ```typescript
-async dumpSave(filepath: string): Promise<string>
+async dumpSave(filepath?: string): Promise<string>
 ```
 
 サーバー上の `filepath` へインデックスのダンプ保存を開始します。書き込み先の
-filepath で解決します。進捗の監視には [`dumpStatus()`](#dumpstatus) を使います。
+filepath で解決します。`filepath` を省略すると、サーバーに設定されたダンプ
+ディレクトリと既定ファイル名へ書き込みます。進捗の監視には
+[`dumpStatus()`](#dumpstatus) を使います。
+
+デッドラインはリクエストタイムアウトではなく `ClientConfig.dumpSaveTimeout` です。
 
 ### dumpLoad()
 
@@ -753,29 +792,101 @@ type CircuitState = 'closed' | 'open' | 'half-open';
 
 ```typescript
 interface ClientConfig {
-  host?: string;           // サーバーホスト名（デフォルト: '127.0.0.1'）
-  port?: number;           // サーバーポート（デフォルト: 11016）
-  timeout?: number;        // 接続タイムアウト（ミリ秒、デフォルト: 5000）
-  recvBufferSize?: number; // 受信バッファサイズ（バイト、デフォルト: 65536）
-  maxQueryLength?: number; // クエリ式の最大文字数（デフォルト: 128）
-  autoReconnect?: boolean; // 書き込み前に死んだソケットを検出したら1回だけ再接続して再送。純JSトランスポートのみ（デフォルト: false）
+  host?: string;              // サーバーホスト名（デフォルト: '127.0.0.1'）
+  port?: number;              // サーバーポート（デフォルト: 11016）
+  socketPath?: string;        // Unix ソケットのパス。host/port より優先
+  timeout?: number;           // 通常コマンド1件のデッドライン（ミリ秒、デフォルト: 5000）
+  connectTimeout?: number;    // 接続と AUTH のデッドライン（ミリ秒、デフォルト: timeout と同じ）
+  dumpSaveTimeout?: number;   // DUMP SAVE のデッドライン（ミリ秒、デフォルト: 600000）
+  dumpLoadTimeout?: number;   // DUMP LOAD のデッドライン（ミリ秒、デフォルト: 600000）
+  dumpVerifyTimeout?: number; // DUMP VERIFY のデッドライン（ミリ秒、デフォルト: 600000）
+  optimizeTimeout?: number;   // OPTIMIZE のデッドライン（ミリ秒、デフォルト: 600000）
+  recvBufferSize?: number;    // 受信バッファサイズ（バイト、デフォルト: 65536）
+  maxResponseBytes?: number;  // 受け入れるレスポンスフレームの上限（バイト、デフォルト: 67108864）
+  maxQueryLength?: number;    // クエリ式の最大文字数（デフォルト: 128）
+  autoReconnect?: boolean;    // 書き込み前に死んだソケットを検出したら1回だけ再接続して再送。純JSトランスポートのみ（デフォルト: false）
+  adminToken?: string;        // 接続のたびに AUTH <token> として送信（MygramDB v1.10+、デフォルト: なし）
 }
 ```
+
+`DUMP SAVE`・`DUMP LOAD`・`DUMP VERIFY`・`OPTIMIZE` はインデックス全体を走査する
+ため、リクエストタイムアウトとは別のデッドラインを持ちます。これらのために
+`timeout` を延ばすと、通常のクエリの障害検知まで遅くなってしまいます。
+
+`maxResponseBytes` を超えたレスポンスフレームは信頼も再同期もできないため、
+クライアントは接続を閉じ、保留中のコマンドを `ProtocolError` で失敗させます。
 
 ### SearchOptions
 
 ```typescript
 interface SearchOptions {
-  limit?: number;                    // 最大結果数（デフォルト: 1000）
-  offset?: number;                   // ページネーションオフセット（デフォルト: 0）
-  andTerms?: string[];               // 追加の必須検索語
-  notTerms?: string[];               // 除外する検索語
-  filters?: Record<string, string>;  // フィルタ条件（カラム: 値）
-  sortColumn?: string;               // ソートカラム（デフォルト: プライマリキー）
-  sortDesc?: boolean;                // 降順ソート（デフォルト: true）
-  fuzzy?: number;                    // あいまい検索の編集距離（0 = 完全一致）
-  highlight?: HighlightOptions;      // ハイライトスニペットを有効化
+  queryMode?: QueryMode;         // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB v1.9+）
+  limit?: number;                // 最大結果数（デフォルト: 1000）
+  offset?: number;               // ページネーションオフセット（デフォルト: 0）
+  andTerms?: string[];           // 追加の必須検索語
+  notTerms?: string[];           // 除外する検索語
+  filters?: FilterSpec;          // フィルタ条件
+  sortColumn?: string;           // ソートカラム（デフォルト: プライマリキー）
+  sortDesc?: boolean;            // 降順ソート（デフォルト: true）
+  fuzzy?: number;                // あいまい検索の編集距離（0 = 完全一致）
+  highlight?: HighlightOptions;  // ハイライトスニペットを有効化
 }
+```
+
+### QueryMode
+
+```typescript
+type QueryMode = 'literal' | 'boolean';
+```
+
+サーバーが検索テキストをどう解釈するかを指定します（MygramDB v1.9+）。
+
+- `literal`（デフォルト） - テキストをフレーズとして扱います。`AND`・`OR`・`NOT` などの予約語、グループ化の括弧、バックスラッシュはクォートされ、通常の文字としてマッチします。
+- `boolean` - テキストを式として扱い、サーバーの式パーサに渡します。`AND`/`OR`/`NOT` と括弧は演算子として解釈されます。
+
+どのインターフェースでも既定は literal です。そのため `alpha AND beta` の意味は、TCP・HTTP・型付きクライアントのどれに移しても変わりません。式にフィルタ・ソート・あいまい検索・ハイライトを組み合わせられるのが boolean モードです。[`searchRaw()`](#searchraw) は式のみを扱う簡潔なエントリポイントのままで、これらの句は受け付けません。
+
+```typescript
+// 「alpha AND beta」というテキストそのもののフレーズ検索
+await client.search('articles', 'alpha AND beta');
+
+// ブール式と型付きフィルタの組み合わせ
+await client.search('articles', 'alpha AND (xqz OR jkv)', {
+  queryMode: 'boolean',
+  filters: { status: 'published' }
+});
+```
+
+### FilterSpec
+
+```typescript
+type FilterOperator = '=' | '!=' | '<>' | '>' | '>=' | '<' | '<=';
+
+type FilterValue = string | { op: FilterOperator; value: string };
+
+interface FilterCondition {
+  column: string;
+  op?: FilterOperator;  // 省略時は '='
+  value: string;
+}
+
+type FilterSpec = Record<string, FilterValue> | FilterCondition[];
+```
+
+FILTER 句は2つの形式を受け付けます。レコード形式はカラム名をキーとし、1カラムにつき1条件までです。範囲指定のように1つのカラムへ2つの条件を課す場合は配列形式を使います。`=` 以外の比較演算子には MygramDB v1.9 以降が必要です。
+
+```typescript
+// 等価比較（すべてのMygramDBバージョン）
+filters: { status: 'active' }
+
+// 単一の比較
+filters: { price: { op: '>=', value: '100' } }
+
+// 範囲: 1カラムに2条件
+filters: [
+  { column: 'price', op: '>=', value: '100' },
+  { column: 'price', op: '<=', value: '500' }
+]
 ```
 
 ### SearchRawOptions
@@ -792,9 +903,10 @@ interface SearchRawOptions {
 
 ```typescript
 interface CountOptions {
-  andTerms?: string[];               // 追加の必須検索語
-  notTerms?: string[];               // 除外する検索語
-  filters?: Record<string, string>;  // フィルタ条件（カラム: 値）
+  queryMode?: QueryMode;  // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB v1.9+）
+  andTerms?: string[];    // 追加の必須検索語
+  notTerms?: string[];    // 除外する検索語
+  filters?: FilterSpec;   // フィルタ条件
 }
 ```
 
@@ -813,11 +925,13 @@ interface HighlightOptions {
 
 ```typescript
 interface FacetOptions {
-  query?: string;                    // 集計を絞り込む任意のクエリ
-  andTerms?: string[];               // 追加の必須検索語
-  notTerms?: string[];               // 除外する検索語
-  filters?: Record<string, string>;  // フィルタ条件（カラム: 値）
-  limit?: number;                    // ファセット値の最大数（0 = 無制限）
+  query?: string;         // 集計を絞り込む任意のクエリ
+  queryMode?: QueryMode;  // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB v1.9+）
+  andTerms?: string[];    // 追加の必須検索語
+  notTerms?: string[];    // 除外する検索語
+  filters?: FilterSpec;   // フィルタ条件
+  limit?: number;         // 1ページあたりのファセット値の最大数（0 = 無制限）
+  offset?: number;        // ページの前にスキップする distinct 値の数（MygramDB v1.9+）
 }
 ```
 
@@ -825,13 +939,21 @@ interface FacetOptions {
 
 ```typescript
 interface FacetResponse {
-  results: FacetValue[]; // サーバー定義順のファセット値
+  results: FacetValue[];  // 返却ページ内のファセット値、サーバー定義順
+  totalCount: number;     // OFFSET/LIMIT 適用前の distinct 値の総数（MygramDB v1.10+）
 }
 
 interface FacetValue {
   value: string;  // ファセット列の distinct な値
   count: number;  // その値を持つドキュメント数
 }
+```
+
+ページャに必要なのは distinct 値の総数である `totalCount` です。`results.length` は返却されたページのサイズにすぎません。総数を返さない v1.10 より前のサーバーに対しては、`totalCount` は `results.length` にフォールバックします。
+
+```typescript
+const page = await client.facet('articles', 'category', { limit: 20, offset: 40 });
+console.log(`${page.totalCount} カテゴリ中 ${page.results.length} 件を表示`);
 ```
 
 ### SearchResponse
@@ -877,31 +999,100 @@ interface Document {
 で設定した上限を超える長さのクエリ式を送信しようとした場合に発生するクライアント側のエラーです。
 入力内容を見直すか、意図的に長いクエリが必要な場合は上限値を調整してください。
 
+### ServerError
+
+```typescript
+class ServerError extends ProtocolError {
+  readonly code: number | undefined;  // 数値コード。v1.10 より前のサーバーでは undefined
+  readonly rawFrame: string;          // 受信した ERROR フレーム全体
+}
+```
+
+サーバーがコマンドを拒否したときに送出されます。MygramDB v1.10 以降はすべての `ERROR` フレームに数値コードが前置される（`ERROR 4007 Table not found`）ため、`code` にその値が入り、`message` には人間向けの残り部分だけが入ります。より古いサーバーではフレームにコードがないので、`code` は `undefined` となり `message` がペイロード全体になります。
+
+`ServerError` は `ProtocolError` を継承しています。従来のリリース向けに書かれた、サーバー側の拒否をすべて `ProtocolError` として捉えるコードはそのまま動作します。新しいコードではメッセージ文字列ではなく `code` で分岐してください。
+
+```typescript
+import { ErrorCode, ServerError } from 'mygramdb-client';
+
+try {
+  await client.search('missing_table', 'hello');
+} catch (error) {
+  if (error instanceof ServerError && error.code === ErrorCode.TableNotFound) {
+    // 未知のテーブルを処理する
+  }
+}
+```
+
+### ErrorCode
+
+MygramDB v1.10 以降のサーバーが送出しうる数値エラーコードです。サーバー側の列挙をミラーした const オブジェクトとしてエクスポートされます。コードは範囲ごとに分類されています。一般（0-999）、設定（1000-1999）、MySQL（2000-2999）、クエリ解析（3000-3999）、インデックス/検索（4000-4999）、ストレージ（5000-5999）、ネットワーク/サーバー（6000-6999）、クライアント（7000-7999）、キャッシュ（8000-8999）。
+
+クライアントが分岐に使う頻度が高いものは次のとおりです。
+
+| コード | 名前 | 意味 |
+| --- | --- | --- |
+| 7 | `PermissionDenied` | `AUTH` 成功前に管理コマンドを発行した |
+| 2017 | `MySQLUndecodableBinlogEvent` | このビルドがデコードできないイベントでレプリケーションが停止した |
+| 3006 | `QueryInvalidFilter` | フィルタの形式が不正 |
+| 3008 / 3009 | `QueryInvalidLimit` / `QueryInvalidOffset` | `limit` または `offset` が範囲外 |
+| 4007 | `TableNotFound` | 未知のテーブル |
+| 6028 | `ServerLoading` | ダンプ読み込み中で一時的に利用不可 |
+| 6029 | `ServerNotReady` | 要求された操作を提供できる状態にない |
+| 6030 | `ServerBusy` | レート制限、または長時間処理がテーブルを保持中 |
+
+コードの集合をハードコードせずに分類できるヘルパーが3つあります。
+
+```typescript
+import { isAuthRequiredErrorCode, isConnectionLostErrorCode, isRetryableErrorCode } from 'mygramdb-client';
+
+isRetryableErrorCode(error.code);        // 一時的 — バックオフしてリトライ
+isConnectionLostErrorCode(error.code);   // 先に再接続（と再認証）が必要
+isAuthRequiredErrorCode(error.code);     // 管理トークンが必要
+```
+
 ### ServerInfo
 
 ```typescript
 interface ServerInfo {
-  version: string;           // サーバーバージョン
-  uptimeSeconds: number;     // サーバー稼働時間（秒）
-  totalRequests: number;     // 累計リクエスト処理数
-  activeConnections: number; // 現在アクティブな接続数
-  indexSizeBytes: number;    // インデックスサイズ（バイト）
-  docCount: number;          // 総ドキュメント数
-  tables: string[];          // テーブル名のリスト
+  version: string;            // サーバーバージョン
+  uptimeSeconds: number;      // サーバー稼働時間（秒）
+  totalRequests: number;      // 累計リクエスト処理数
+  activeConnections: number;  // 現在アクティブな接続数
+  indexSizeBytes: number;     // インデックスサイズ（バイト）
+  docCount: number;           // 総ドキュメント数
+  tables: string[];           // テーブル名のリスト
+  dataInitialized?: boolean;  // 設定済み全テーブルの初期ロードが完了したか（MygramDB v1.10+）
+  ready?: boolean;            // クエリを処理できる状態か（MygramDB v1.10+）
 }
 ```
+
+`dataInitialized` と `ready` は HTTP ヘルスエンドポイントと同じ入力から評価されます。そのため TCP のみの構成でも、HTTP をポーリングせずにトラフィックを制御できます。サーバーがこれらを報告しない場合はどちらも `undefined` です。
 
 ### ReplicationStatus
 
 ```typescript
 interface ReplicationStatus {
-  running: boolean;          // レプリケーションが実行中かどうか
-  gtid: string;              // 現在のGTID位置
-  statusStr: string;         // 生のステータス文字列
-  processedEvents?: number;  // これまでに処理したイベント数（MygramDB v1.6+）
-  queueSize?: number;        // レプリケーションキューのサイズ、実行中のみ存在（MygramDB v1.6+）
+  running: boolean;                  // レプリケーションが実行中かどうか
+  gtid: string;                      // 現在のGTID位置
+  statusStr: string;                 // 生のステータス文字列
+  state?: ReplicationState;          // running | stopped | failed | not_configured
+  processedEvents?: number;          // これまでに処理したイベント数（MygramDB v1.6+）
+  queueSize?: number;                // レプリケーションキューのサイズ、実行中のみ存在（MygramDB v1.6+）
+  crcErrors?: number;                // チェックサム検証に失敗した binlog イベント数（MygramDB v1.10+）
+  schemaIncompatible?: boolean;      // MySQL のスキーマ不一致で停止したか（MygramDB v1.10+）
+  lastErrorCode?: number;            // 直近の失敗のエラーコード（MygramDB v1.10+）
+  lastError?: string;                // lastErrorCode に対応するメッセージ（MygramDB v1.10+）
+  lastAppliedUnixtime?: number;      // 最後にイベントを適用した Unix 時刻（MygramDB v1.10+）
+  secondsSinceLastApplied?: number;  // レプリケーション遅延（秒、MygramDB v1.10+）
 }
 ```
+
+`state` は「障害での停止」と「要求による停止」を区別します。`running: false`
+だけでは表現できません。`lastErrorCode` は [`ErrorCode`](#errorcode) と同じ体系で、
+障害が記録されていない間は未定義です（起動に成功するとサーバー側でクリアされます）。
+監視対象としては `secondsSinceLastApplied` が適切です。レプリケーション位置が
+進んだ地点で記録されるため、単なる疎通ではなく実際の進捗を測れます。
 
 ### DebugInfo
 
@@ -931,31 +1122,60 @@ interface DebugInfo {
 
 ```typescript
 interface CacheStats {
-  enabled: boolean;         // キャッシュが有効かどうか
-  maxMemoryMb: number;      // 最大キャッシュメモリ（MB）
-  currentMemoryMb: number;  // 現在のキャッシュメモリ使用量（MB）
-  entries: number;          // キャッシュエントリ数
-  hits: number;             // キャッシュヒット数
-  misses: number;           // キャッシュミス数
-  hitRate: number;          // キャッシュヒット率（パーセント）
-  evictions: number;        // キャッシュ退避数
-  ttlSeconds: number;       // キャッシュTTL（秒）
+  enabled: boolean;                       // キャッシュが有効かどうか
+  totalQueries: number;                   // キャッシュを参照したクエリ数
+  hits: number;                           // キャッシュヒット数
+  misses: number;                         // キャッシュミス数
+  hitRate: number;                        // ヒット率（0〜1の比率）
+  entries: number;                        // キャッシュエントリ数
+  currentMemoryBytes: number;             // キャッシュエントリが保持するメモリ量
+  currentMemoryMb: number;                // currentMemoryBytes を MB で表したもの
+  invalidationIndexMemoryBytes: number;   // 無効化用の逆引きインデックスのメモリ量
+  invalidationQueueMemoryBytes: number;   // 保留中の無効化が保持するメモリ量（MygramDB v1.10+）
+  accountedMemoryBytes: number;           // キャッシュ予算に計上された総メモリ量
+  evictions: number;                      // 容量・メモリ制約による退避数
+  ttlExpirations: number;                 // TTL 満了で破棄されたエントリ数
+  rejections: number;                     // 挿入が拒否された総数
+  rejectionOversize: number;              // 拒否理由: エントリ単体のサイズ上限超過
+  rejectionMemoryBudget: number;          // 拒否理由: メモリ予算の枯渇
+  rejectionDuplicate: number;             // 拒否理由: 同等のエントリが既に存在
+  staleEntryRemovals: number;             // 陳腐化チェックで除去されたエントリ数
+  decompressionFailures: number;          // 展開失敗で破棄されたエントリ数
+  staleLruEntries: number;                // 実体が消えたエントリを指す LRU ノード数
+  invalidationsImmediate: number;         // 行イベント上で即時適用した無効化数
+  invalidationsDeferred: number;          // バックグラウンドワーカーに回した無効化数
+  invalidationsBatches: number;           // ワーカーが処理したバッチ数
+  avgHitTimeMs?: number;                  // ヒットの平均応答時間。初回ヒットまでは未定義
+  avgMissTimeMs?: number;                 // ミスの平均応答時間。初回ミスまでは未定義
+  totalTimeSavedMs: number;               // ヒットにより削減できた実行時間
 }
 ```
+
+`hitRate` はパーセントではなく 0〜1 の比率です。キャッシュの最大サイズと TTL は
+統計ではなく設定であり、このレスポンスには含まれません。`SHOW VARIABLES`、または
+`INFO` の `cache_ttl_seconds` フィールドから読み取ってください。
 
 ### DumpStatus
 
 ```typescript
 interface DumpStatus {
-  status: string;           // saving, loading, idle, completed, failed
-  filepath: string;         // ダンプのファイルパス
-  tablesTotal: number;      // テーブル総数
-  tablesProcessed: number;  // 処理済みテーブル数
-  currentTable: string;     // 現在処理中のテーブル名
-  elapsedSeconds: number;   // 経過時間（秒）
-  error?: string;           // status が failed のときのエラーメッセージ
+  status: string;                    // IDLE, SAVING, LOADING, COMPLETED, FAILED
+  filepath: string;                  // ダンプのファイルパス
+  tablesTotal: number;               // テーブル総数
+  tablesProcessed: number;           // 処理済みテーブル数
+  currentTable: string;              // 現在処理中のテーブル名
+  elapsedSeconds: number;            // 経過時間（秒）
+  error?: string;                    // status が FAILED のときのエラーメッセージ
+  saveInProgress: boolean;           // DUMP SAVE が実行中かどうか
+  loadInProgress: boolean;           // DUMP LOAD が実行中かどうか
+  replicationPausedForDump: boolean; // ダンプのためレプリケーションを停止中かどうか
+  resultFilepath?: string;           // 保存完了後、実際に書き込まれたパス
 }
 ```
+
+`status` はサーバーが返すとおり大文字です。進捗トラッキングなしで動作している
+サーバーは代わりに `SAVE_IN_PROGRESS` / `LOAD_IN_PROGRESS` / `IDLE` を返すため、
+操作が進行中かどうかを確実に判定するには真偽値のフラグを見てください。
 
 ## エラー型
 

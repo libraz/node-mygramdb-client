@@ -118,10 +118,14 @@ console.log(parsed);
 // {
 //   requiredTerms: ['golang'],
 //   excludedTerms: ['old'],
-//   optionalTerms: ['tutorial', 'guide'],
-//   rawExpression: '+golang -old (tutorial OR guide)'
+//   optionalTerms: [],
+//   rawExpression: '(tutorial OR guide)'
 // }
 ```
+
+プレフィックスのない用語はすべて `+` を付けた場合と同じく必須です。`golang rust`
+は両方の語を含むことを意味します。`rawExpression` には入力のうち OR ／ 括弧の
+部分だけが入るため、用語と組み合わせても重複や欠落が起きません。
 
 ### convertSearchExpression()
 
@@ -141,7 +145,7 @@ Web形式の検索式をMygramDBクエリ形式に変換します。
 import { convertSearchExpression } from 'mygramdb-client';
 
 convertSearchExpression('golang tutorial');
-// 戻り値: 'golang OR tutorial'
+// 戻り値: 'golang AND tutorial'
 
 convertSearchExpression('+golang +tutorial');
 // 戻り値: 'golang AND tutorial'
@@ -150,11 +154,20 @@ convertSearchExpression('+golang -old');
 // 戻り値: 'golang AND NOT old'
 
 convertSearchExpression('python OR ruby');
-// 戻り値: 'python OR ruby'
+// 戻り値: '(python OR ruby)'
 
 convertSearchExpression('+golang +(tutorial OR guide)');
-// 戻り値: '+golang +(tutorial OR guide)'
+// 戻り値: 'golang AND (tutorial OR guide)'
+
+convertSearchExpression('golang python OR ruby');
+// 戻り値: 'golang AND (python OR ruby)'
 ```
+
+戻り値は常に MygramDB のブール式であり、Web 形式がそのまま素通りすることは
+ありません。`+` と `-` は `AND` と `AND NOT` に解決され、OR の連鎖はユーザーが
+書いたとおりに結合するよう括弧で囲まれます。結果は
+[`searchRaw()`](./api-reference.md#searchraw)、または `queryMode: 'boolean'` を
+指定した `search()` に渡してください。
 
 ### simplifySearchExpression()
 
@@ -186,27 +199,29 @@ console.log(notTerms);  // ['old', 'deprecated']
 ### hasComplexExpression()
 
 ```typescript
-function hasComplexExpression(expression: string): boolean
+function hasComplexExpression(expr: SearchExpression): boolean
 ```
 
-式に簡素化できない複雑な構文(OR、グループ化)が含まれているかどうかをチェックします。
+解析済みの式に OR ／ グループ化が含まれるか
+——[`simplifySearchExpression()`](#simplifysearchexpression) では表現できない構文か
+——を判定します。引数は元の文字列ではなく解析済みオブジェクトです。
 
 **パラメータ:**
-- `expression` (string) - Web形式の検索式
+- `expr` (SearchExpression) - 解析済みの式
 
 **戻り値:** 複雑な場合は`true`、単純な場合は`false`
 
 **例:**
 ```typescript
-import { hasComplexExpression } from 'mygramdb-client';
+import { hasComplexExpression, parseSearchExpression } from 'mygramdb-client';
 
-hasComplexExpression('+golang tutorial -old');
+hasComplexExpression(parseSearchExpression('+golang tutorial -old'));
 // 戻り値: false (単純な式)
 
-hasComplexExpression('golang OR rust');
+hasComplexExpression(parseSearchExpression('golang OR rust'));
 // 戻り値: true (OR演算子あり)
 
-hasComplexExpression('+(tutorial OR guide)');
+hasComplexExpression(parseSearchExpression('+(tutorial OR guide)'));
 // 戻り値: true (グループ化あり)
 ```
 
@@ -263,17 +278,18 @@ const results = await client.search('articles', mainTerm, {
 OR演算子やグループ化を含む複雑な式の場合、MygramDB形式に変換します:
 
 ```typescript
-import { MygramClient, convertSearchExpression, hasComplexExpression } from 'mygramdb-client';
+import { MygramClient, hasComplexExpression, parseSearchExpression, toQueryString } from 'mygramdb-client';
 
 const client = new MygramClient();
 await client.connect();
 
 const userInput = '+golang +(tutorial OR guide) -old';
+const parsed = parseSearchExpression(userInput);
 
-if (hasComplexExpression(userInput)) {
-  // 変換されたクエリを直接使用
-  const query = convertSearchExpression(userInput);
-  const results = await client.search('articles', query);
+if (hasComplexExpression(parsed)) {
+  // ブール式なので searchRaw() でそのまま送る。search() はクエリを
+  // リテラルとしてクォートしてしまうため。
+  const results = await client.searchRaw('articles', toQueryString(parsed));
 } else {
   // 簡素化された用語を使用
   const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
@@ -291,9 +307,10 @@ if (hasComplexExpression(userInput)) {
 ```typescript
 import {
   MygramClient,
-  convertSearchExpression,
-  simplifySearchExpression,
   hasComplexExpression,
+  parseSearchExpression,
+  simplifySearchExpression,
+  toQueryString,
   SearchOptions,
 } from 'mygramdb-client';
 
@@ -303,10 +320,11 @@ async function smartSearch(
   expression: string,
   options: SearchOptions = {}
 ) {
-  if (hasComplexExpression(expression)) {
-    // 複雑な式: 変換して検索
-    const query = convertSearchExpression(expression);
-    return client.search(table, query, options);
+  const parsed = parseSearchExpression(expression);
+
+  if (hasComplexExpression(parsed)) {
+    // 複雑な式: ブール形式で送り、サーバー側のパーサーに解釈させる
+    return client.search(table, toQueryString(parsed), { ...options, queryMode: 'boolean' });
   }
 
   // 単純な式: 用語を抽出してオプションを使用
@@ -360,9 +378,9 @@ const results = await client.search('articles', mainTerm, { andTerms, notTerms }
 const expression = 'python OR ruby OR javascript';
 const query = convertSearchExpression(expression);
 
-// query: 'python OR ruby OR javascript'
+// query: '(python OR ruby OR javascript)'
 
-const results = await client.search('articles', query);
+const results = await client.searchRaw('articles', query);
 ```
 
 ### 例4: 複雑なクエリ
@@ -371,9 +389,9 @@ const results = await client.search('articles', query);
 const expression = '+backend +(golang OR rust) -php "best practices"';
 const query = convertSearchExpression(expression);
 
-// query: '+backend +(golang OR rust) -php "best practices"'
+// query: 'backend AND (golang OR rust) AND "best practices" AND NOT php'
 
-const results = await client.search('articles', query);
+const results = await client.searchRaw('articles', query);
 ```
 
 ### 例5: フレーズ検索
@@ -398,10 +416,10 @@ const results = await client.search('articles', mainTerm, { andTerms, notTerms }
 
 ```typescript
 interface SearchExpression {
-  requiredTerms: string[];   // +でマークされた用語
+  requiredTerms: string[];   // +でマークされた用語と、プレフィックスのない用語すべて
   excludedTerms: string[];   // -でマークされた用語
-  optionalTerms: string[];   // プレフィックスのない用語
-  rawExpression: string;     // OR/グループ化のために保持される元の式
+  optionalTerms: string[];   // 常に空。外部で組み立てたオブジェクトのために残されている
+  rawExpression: string;     // 入力のうち OR ／ 括弧の部分のみ
 }
 ```
 
@@ -411,7 +429,7 @@ interface SearchExpression {
 
 1. **トークン化**: 式をトークン(用語、演算子、括弧)に分割
 2. **正規化**: 全角スペースと文字をASCIIに正規化
-3. **分類**: トークンを必須(+)、除外(-)、または任意として分類
+3. **分類**: トークンを必須（`+` またはプレフィックスなし）と除外（`-`）に分類
 4. **グループ化**: 括弧を解析してORグループを識別
 5. **変換**: 解析された式をMygramDBクエリ形式に変換
 

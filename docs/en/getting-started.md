@@ -5,7 +5,7 @@ This guide will help you get started with the mygramdb-client library for Node.j
 ## Prerequisites
 
 - Node.js 22.0.0 or higher
-- Yarn 4.x (managed via Volta)
+- Yarn 4.x (managed via mise)
 - A running MygramDB server
 
 ## Installation
@@ -113,8 +113,19 @@ The `MygramClient` constructor accepts a configuration object with the following
 |--------|------|---------|-------------|
 | `host` | string | `'127.0.0.1'` | Server hostname or IP address |
 | `port` | number | `11016` | Server port number |
-| `timeout` | number | `5000` | Connection timeout in milliseconds |
+| `timeout` | number | `5000` | Deadline for one ordinary command, in milliseconds |
+| `connectTimeout` | number | same as `timeout` | Deadline for connecting and `AUTH`, in milliseconds |
+| `dumpSaveTimeout` | number | `600000` | Deadline for `DUMP SAVE`, in milliseconds |
+| `dumpLoadTimeout` | number | `600000` | Deadline for `DUMP LOAD`, in milliseconds |
+| `dumpVerifyTimeout` | number | `600000` | Deadline for `DUMP VERIFY`, in milliseconds |
+| `optimizeTimeout` | number | `600000` | Deadline for `OPTIMIZE`, in milliseconds |
 | `recvBufferSize` | number | `65536` | Receive buffer size in bytes |
+| `maxResponseBytes` | number | `67108864` | Largest response frame accepted, in bytes |
+| `adminToken` | string | — | Sent as `AUTH <token>` on every connect (MygramDB v1.10+) |
+
+Dumps and `OPTIMIZE` walk the whole index, so they get their own deadlines
+instead of the request timeout — raising `timeout` for their sake would slow
+down failure detection on ordinary queries.
 
 ### Example with Custom Configuration
 
@@ -127,12 +138,25 @@ const client = new MygramClient({
 });
 ```
 
+### Administrative Commands
+
+MygramDB v1.10 requires an `AUTH` on the same connection before it will run
+`DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`,
+`CACHE *`, `SET` or `SHOW VARIABLES`. Set `adminToken` and the client
+authenticates on every connect, reconnects included. Searching needs no token.
+
+```typescript
+const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
+await client.connect();
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+```
+
 ## Error Handling
 
 The library provides specific error types for different failure scenarios:
 
 ```typescript
-import { MygramClient, ConnectionError, ProtocolError, TimeoutError } from 'mygramdb-client';
+import { MygramClient, ConnectionError, ServerError, TimeoutError } from 'mygramdb-client';
 
 try {
   await client.connect();
@@ -140,8 +164,9 @@ try {
 } catch (error) {
   if (error instanceof ConnectionError) {
     console.error('Failed to connect to server:', error.message);
-  } else if (error instanceof ProtocolError) {
-    console.error('Server returned an error:', error.message);
+  } else if (error instanceof ServerError) {
+    // MygramDB v1.10+ also reports a numeric code; it is undefined on older servers.
+    console.error(`Server returned an error (${error.code ?? 'no code'}):`, error.message);
   } else if (error instanceof TimeoutError) {
     console.error('Request timed out:', error.message);
   } else {
@@ -149,6 +174,9 @@ try {
   }
 }
 ```
+
+`ServerError` extends `ProtocolError`, so existing code that catches
+`ProtocolError` still sees every server-side rejection.
 
 ## Next Steps
 

@@ -7,7 +7,7 @@
 
 [MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリ — MySQL レプリケーション対応の高性能インメモリ全文検索エンジン。
 
-MygramDB v1.6 互換（BM25 スコアリング、HIGHLIGHT、FUZZY、FACET 対応）。
+MygramDB v1.10 までに追従（型付きエラーコード、管理コマンドの `AUTH`、`INFO` のレディネス、ブールクエリモード、比較フィルタ、ファセットのページネーション）。v1.6 以降のサーバーとの互換性も維持しています。
 
 ## 概要
 
@@ -214,6 +214,95 @@ console.log(await client.showVariables('logging%'));
 await client.sync('app_db.articles');
 console.log(await client.syncStatus());
 await client.syncStop('app_db.articles');
+```
+
+## MygramDB v1.9 の機能
+
+### 型付き句と組み合わせるブールクエリモード
+
+`searchRaw()` は式だけを送ります。式にフィルタ・ソート・あいまい検索・ハイライトを組み合わせたい場合は、`search()` に `queryMode: 'boolean'` を渡します。既定は `literal` のままなので、通常のユーザー入力はこれまでどおりフレーズとしてマッチします。
+
+```typescript
+await client.search('articles', 'alpha AND (xqz OR jkv)', {
+  queryMode: 'boolean',
+  filters: { status: 'published' },
+  sortColumn: '_score'
+});
+```
+
+### 比較フィルタ
+
+フィルタは `=`・`!=`・`<>`・`>`・`>=`・`<`・`<=` を受け付けます。1つのカラムに2つの条件が必要な場合は配列形式を使います。
+
+```typescript
+await client.search('products', 'laptop', {
+  filters: [
+    { column: 'price', op: '>=', value: '100' },
+    { column: 'price', op: '<=', value: '500' }
+  ]
+});
+```
+
+### ファセットのページネーション
+
+```typescript
+const page = await client.facet('articles', 'category', { limit: 20, offset: 40 });
+console.log(`${page.totalCount} カテゴリ中 ${page.results.length} 件`);
+```
+
+## MygramDB v1.10 の機能
+
+### 管理コマンドの認証
+
+v1.10 のサーバーは管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）を `AUTH` の背後に置きます。`adminToken` を設定すれば、再接続やプールの各接続も含め、接続のたびにクライアントが認証します。
+
+```typescript
+const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
+await client.connect();
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+```
+
+通常の検索トラフィックにトークンは不要です。
+
+### 型付きエラーコード
+
+`ERROR` フレームが数値コードを持つようになり、メッセージ文字列を照合せずに失敗を分類できます。サーバー側の拒否は `ProtocolError` のサブクラスである `ServerError` として届きます。
+
+```typescript
+import { ErrorCode, ServerError, isRetryableErrorCode } from 'mygramdb-client';
+
+try {
+  await client.search('articles', 'hello');
+} catch (error) {
+  if (error instanceof ServerError && isRetryableErrorCode(error.code)) {
+    // 6028 ロード中 / 6029 未レディ / 6030 ビジー — バックオフしてリトライ
+  }
+}
+```
+
+### INFO のレディネス
+
+```typescript
+const info = await client.info();
+if (info.ready === false) {
+  // サーバーは起動しているが、まだクエリを処理できる状態ではない
+}
+```
+
+### レプリケーション遅延と操作ごとのデッドライン
+
+`getReplicationStatus()` は `secondsSinceLastApplied` を返します。これはレプリ
+ケーション位置が進んだ地点で記録されるため、単なる疎通ではなく実際の進捗を表し
+ます。ダンプと `OPTIMIZE` は専用のデッドラインを持つので、`timeout` は停止した
+クエリを検知できる短さのまま維持できます。
+
+```typescript
+const client = new MygramClient({ timeout: 3000, dumpSaveTimeout: 900_000 });
+
+const status = await client.getReplicationStatus();
+if ((status.secondsSinceLastApplied ?? 0) > 60) {
+  console.warn(`レプリケーションが ${status.secondsSinceLastApplied} 秒遅延しています`, status.lastError);
+}
 ```
 
 ## TypeScript

@@ -7,7 +7,9 @@
 
 Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine with MySQL replication support.
 
-Compatible with MygramDB v1.6 (BM25 scoring, HIGHLIGHT, FUZZY, FACET).
+Tracks MygramDB through v1.10 — typed error codes, administrative `AUTH`,
+readiness on `INFO`, boolean query mode, comparison filters and facet
+pagination — and stays compatible with servers back to v1.6.
 
 ## Overview
 
@@ -224,6 +226,104 @@ console.log(await client.showVariables('logging%'));
 await client.sync('app_db.articles');
 console.log(await client.syncStatus());
 await client.syncStop('app_db.articles');
+```
+
+## MygramDB v1.9 Features
+
+### Boolean query mode with typed clauses
+
+`searchRaw()` sends an expression on its own. To combine one with filters,
+sorting, fuzzy matching or highlighting, pass `queryMode: 'boolean'` to
+`search()`. The default stays `literal`, so plain user text keeps matching as a
+phrase:
+
+```typescript
+await client.search('articles', 'alpha AND (xqz OR jkv)', {
+  queryMode: 'boolean',
+  filters: { status: 'published' },
+  sortColumn: '_score'
+});
+```
+
+### Comparison filters
+
+Filters accept `=`, `!=`, `<>`, `>`, `>=`, `<` and `<=`. Use the array form when
+one column needs two conditions:
+
+```typescript
+await client.search('products', 'laptop', {
+  filters: [
+    { column: 'price', op: '>=', value: '100' },
+    { column: 'price', op: '<=', value: '500' }
+  ]
+});
+```
+
+### Facet pagination
+
+```typescript
+const page = await client.facet('articles', 'category', { limit: 20, offset: 40 });
+console.log(`${page.results.length} of ${page.totalCount} categories`);
+```
+
+## MygramDB v1.10 Features
+
+### Administrative authentication
+
+A v1.10 server gates administrative commands (`DUMP *`, `REPLICATION *`,
+`SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET`,
+`SHOW VARIABLES`) behind `AUTH`. Set `adminToken` and the client authenticates
+on every connect, reconnects and pooled connections included:
+
+```typescript
+const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
+await client.connect();
+await client.dumpSave('/var/lib/mygramdb/dump.mgd');
+```
+
+Ordinary search traffic needs no token.
+
+### Typed error codes
+
+`ERROR` frames now carry a numeric code, so failures can be classified without
+matching message text. Server rejections arrive as `ServerError`, a subclass of
+`ProtocolError`:
+
+```typescript
+import { ErrorCode, ServerError, isRetryableErrorCode } from 'mygramdb-client';
+
+try {
+  await client.search('articles', 'hello');
+} catch (error) {
+  if (error instanceof ServerError && isRetryableErrorCode(error.code)) {
+    // 6028 loading / 6029 not ready / 6030 busy — back off and retry
+  }
+}
+```
+
+### Readiness on INFO
+
+```typescript
+const info = await client.info();
+if (info.ready === false) {
+  // the server is up but not yet serving queries
+}
+```
+
+### Replication lag and operation deadlines
+
+`getReplicationStatus()` reports `secondsSinceLastApplied`, stamped where the
+replication position advances, so it measures progress rather than
+connectivity. Dumps and `OPTIMIZE` get their own deadlines, leaving `timeout`
+short enough to detect a stalled query:
+
+```typescript
+const client = new MygramClient({ timeout: 3000, dumpSaveTimeout: 900_000 });
+
+const status = await client.getReplicationStatus();
+if ((status.secondsSinceLastApplied ?? 0) > 60) {
+  console.warn(`replication is ${status.secondsSinceLastApplied}s behind`, status.lastError);
+}
 ```
 
 ## TypeScript
