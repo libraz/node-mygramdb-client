@@ -1,0 +1,4 @@
+{
+  "$comment": "typescript is held on the 5.x line: TypeScript 7 dropped the JavaScript Compiler API that vite-plugin-dts (unplugin-dts) needs to emit declarations, so `yarn build:ts` fails without the @typescript/typescript6 compatibility shim. Revisit once unplugin-dts supports TypeScript 7 natively.",
+  "reject": ["typescript"]
+}
