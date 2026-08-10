@@ -15,6 +15,7 @@ import type {
   DumpStatus,
   FacetResponse,
   FacetValue,
+  ReplicationState,
   ReplicationStatus,
   SearchResponse,
   SearchResult,
@@ -40,6 +41,177 @@ function parseColonKeyValueLines(lines: string[]): Record<string, string> {
     result[key] = value;
   }
   return result;
+}
+
+/**
+ * Decode one server-escaped response value.
+ *
+ * The server quotes a primary key or a string filter value whenever it is
+ * empty or contains whitespace, a double quote, a backslash or a control
+ * character, escaping `\\`, `\"`, `\r`, `\n`, `\t` and `\xNN` inside the
+ * quotes. An unquoted token is returned as-is, so this is safe to apply to
+ * every token.
+ *
+ * @param {string} token - Single token exactly as it appeared on the wire
+ * @returns {string} The original value
+ */
+export function unescapeResponseValue(token: string): string {
+  if (token.length < 2 || !token.startsWith('"') || !token.endsWith('"')) {
+    return token;
+  }
+
+  const body = token.slice(1, -1);
+  let out = '';
+  for (let i = 0; i < body.length; i += 1) {
+    if (body[i] !== '\\') {
+      out += body[i];
+      continue;
+    }
+    i += 1;
+    switch (body[i]) {
+      case 'r':
+        out += '\r';
+        break;
+      case 'n':
+        out += '\n';
+        break;
+      case 't':
+        out += '\t';
+        break;
+      case 'x': {
+        const hex = body.slice(i + 1, i + 3);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          out += String.fromCharCode(Number.parseInt(hex, 16));
+          i += 2;
+        } else {
+          out += 'x';
+        }
+        break;
+      }
+      case undefined:
+        // Trailing backslash: keep it rather than dropping data.
+        out += '\\';
+        break;
+      default:
+        out += body[i];
+        break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Split a response line into space-delimited tokens, keeping a quoted section
+ * whole.
+ *
+ * A space only ends a token outside quotes, so both a standalone quoted value
+ * and a `column="a b"` pair survive the split. Escaped characters are left
+ * untouched here and decoded by {@link unescapeResponseValue}.
+ *
+ * @param {string} line - Response line without its trailing newline
+ * @returns {string[]} Raw tokens, still escaped
+ */
+function tokenizeResponseLine(line: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '\\' && inQuotes && i + 1 < line.length) {
+      current += ch + line[i + 1];
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      current += ch;
+      continue;
+    }
+    if (ch === ' ' && !inQuotes) {
+      if (current !== '') {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current !== '') {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
+/**
+ * Decoded `ERROR` frame payload.
+ */
+export interface ParsedErrorFrame {
+  /** Numeric error code, or `undefined` for an untyped (pre-v1.10) frame */
+  code: number | undefined;
+  /** Human-readable message with the code prefix removed */
+  message: string;
+}
+
+/** Largest value the server can encode in an `ERROR` frame's `uint16` code. */
+const MAX_ERROR_CODE = 65535;
+
+/**
+ * Parse the leading token of an `ERROR` frame payload as a numeric code.
+ *
+ * Mirrors the server's `protocol::ParseErrorFrame`: a token counts as a code
+ * only when it is all decimal digits, fits in a `uint16`, and is non-zero.
+ * Anything else means the frame came from a pre-v1.10 server and the whole
+ * payload is the message.
+ *
+ * @param {string} token - First whitespace-delimited token of the payload
+ * @returns {number | undefined} The code, or undefined when the token is not one
+ */
+function parseErrorCodeToken(token: string): number | undefined {
+  if (token === '' || !/^[0-9]+$/.test(token)) {
+    return undefined;
+  }
+  const code = Number.parseInt(token, 10);
+  if (code === 0 || code > MAX_ERROR_CODE) {
+    return undefined;
+  }
+  return code;
+}
+
+/**
+ * Parse an `ERROR` frame into a code and a message.
+ *
+ * MygramDB v1.10+ emits `ERROR <code> <message>`; earlier servers emit
+ * `ERROR <message>`. Both are accepted, so one client talks to either.
+ *
+ * @param {string} frame - Complete `ERROR` frame (newline-normalized, trimmed)
+ * @returns {ParsedErrorFrame | null} Decoded payload, or null when the frame is
+ *   not an `ERROR` frame at all
+ *
+ * @example
+ * ```typescript
+ * parseErrorFrame('ERROR 4007 Table not found');
+ * // => { code: 4007, message: 'Table not found' }
+ * parseErrorFrame('ERROR Table not found');
+ * // => { code: undefined, message: 'Table not found' }
+ * ```
+ */
+export function parseErrorFrame(frame: string): ParsedErrorFrame | null {
+  if (!frame.startsWith('ERROR ')) {
+    return null;
+  }
+
+  const payload = frame.substring('ERROR '.length);
+  const separator = payload.indexOf(' ');
+  const codeToken = separator === -1 ? payload : payload.substring(0, separator);
+  const code = parseErrorCodeToken(codeToken);
+  if (code === undefined) {
+    return { code: undefined, message: payload };
+  }
+
+  const message = separator === -1 ? '' : payload.substring(separator + 1);
+  // A bare `ERROR <code>` carries no text; surface the code so the thrown
+  // Error still has a usable message.
+  return { code, message: message === '' ? `Server error ${code}` : message };
 }
 
 /**
@@ -72,7 +244,7 @@ export function parseSearchResponse(response: string): SearchResponse {
     throw new ProtocolError(`Invalid SEARCH response: ${firstLine}`);
   }
 
-  const headerParts = firstLine.split(' ');
+  const headerParts = tokenizeResponseLine(firstLine);
   const totalCount = parseInt(headerParts[2], 10);
 
   const payloadLines: string[] = [];
@@ -89,18 +261,19 @@ export function parseSearchResponse(response: string): SearchResponse {
 
   let results: SearchResult[];
   if (payloadLines.length > 0) {
-    // HIGHLIGHT mode: each payload line is "<pk>[\t<snippet>]".
+    // HIGHLIGHT mode: each payload line is "<pk>[\t<snippet>]". The snippet is
+    // sanitized rather than escaped by the server, so only the key is decoded.
     results = payloadLines.map((line) => {
       const tab = line.indexOf('\t');
       if (tab < 0) {
-        return { primaryKey: line, snippet: '' };
+        return { primaryKey: unescapeResponseValue(line), snippet: '' };
       }
-      return { primaryKey: line.slice(0, tab), snippet: line.slice(tab + 1) };
+      return { primaryKey: unescapeResponseValue(line.slice(0, tab)), snippet: line.slice(tab + 1) };
     });
   } else {
     // Classic mode: PKs follow the count on the first line.
     const ids = headerParts.slice(3);
-    results = ids.map((id) => ({ primaryKey: id }));
+    results = ids.map((id) => ({ primaryKey: unescapeResponseValue(id) }));
   }
 
   let debug: DebugInfo | undefined;
@@ -116,11 +289,16 @@ export function parseSearchResponse(response: string): SearchResponse {
  *
  * Format:
  * ```
- * OK FACET <num_values>
+ * OK FACET <num_values> [<total_values>]
  * <value1>\t<count1>
  * <value2>\t<count2>
  * ...
  * ```
+ * `<num_values>` counts the rows in this page; `<total_values>` is the distinct
+ * value count before OFFSET and LIMIT and is sent by MygramDB v1.10+ only. When
+ * an older server omits it, {@link FacetResponse.totalCount} falls back to the
+ * page size.
+ *
  * Lines starting with `#` (debug/comment) are ignored.
  *
  * @param {string} response - Raw response (newline-normalized)
@@ -139,8 +317,18 @@ export function parseFacetResponse(response: string): FacetResponse {
   if (headerParts.length < 3) {
     throw new ProtocolError('Invalid FACET response: missing count');
   }
-  if (Number.isNaN(parseInt(headerParts[2], 10))) {
+  const pageCount = parseInt(headerParts[2], 10);
+  if (Number.isNaN(pageCount)) {
     throw new ProtocolError(`Invalid FACET count: ${headerParts[2]}`);
+  }
+
+  let totalCount = pageCount;
+  if (headerParts.length >= 4 && headerParts[3] !== '') {
+    const parsedTotal = parseInt(headerParts[3], 10);
+    if (Number.isNaN(parsedTotal)) {
+      throw new ProtocolError(`Invalid FACET total count: ${headerParts[3]}`);
+    }
+    totalCount = parsedTotal;
   }
 
   const results: FacetValue[] = [];
@@ -163,7 +351,7 @@ export function parseFacetResponse(response: string): FacetResponse {
     results.push({ value, count });
   }
 
-  return { results };
+  return { results, totalCount };
 }
 
 /**
@@ -195,6 +383,12 @@ export function parseCountResponse(response: string): CountResponse {
 /**
  * Parse GET response.
  *
+ * The wire form is `OK DOC <primaryKey> <column>=<value> ...`. The primary key
+ * and any string column value are quoted and escaped by the server when they
+ * are empty or carry whitespace, a quote, a backslash or a control character,
+ * so tokens are split with quoting in mind and then decoded. A value may
+ * itself contain `=`; only the first one separates the column from the value.
+ *
  * @param {string} response - Raw response (newline-normalized)
  * @returns {Document} Parsed document
  * @throws {ProtocolError} When the response prefix is not `OK DOC `
@@ -204,15 +398,14 @@ export function parseDocumentResponse(response: string): Document {
     throw new ProtocolError(`Invalid GET response: ${response}`);
   }
 
-  const parts = response.substring(7).split(' ');
-  const primaryKey = parts[0];
+  const parts = tokenizeResponseLine(response.substring('OK DOC '.length));
+  const primaryKey = parts.length > 0 ? unescapeResponseValue(parts[0]) : '';
   const fields: Record<string, string> = {};
 
   parts.slice(1).forEach((part) => {
-    const [key, value] = part.split('=');
-    if (key && value) {
-      fields[key] = value;
-    }
+    const separator = part.indexOf('=');
+    if (separator <= 0) return;
+    fields[part.slice(0, separator)] = unescapeResponseValue(part.slice(separator + 1));
   });
 
   return { primaryKey, fields };
@@ -220,6 +413,11 @@ export function parseDocumentResponse(response: string): Document {
 
 /**
  * Parse INFO response.
+ *
+ * MygramDB v1.10+ additionally reports `data_initialized` and `readiness`,
+ * evaluated from the same inputs as the HTTP health endpoint, so a TCP-only
+ * deployment can gate traffic without polling HTTP. Both are left undefined
+ * when an older server omits them.
  *
  * @param {string} response - Raw response (newline-normalized)
  * @returns {ServerInfo} Parsed server info
@@ -241,6 +439,12 @@ export function parseInfoResponse(response: string): ServerInfo {
     docCount: parseIntOrZero(fields.total_documents),
     tables: fields.tables ? fields.tables.split(',').map((s) => s.trim()) : []
   };
+  if (fields.data_initialized !== undefined) {
+    info.dataInitialized = fields.data_initialized === 'true';
+  }
+  if (fields.readiness !== undefined) {
+    info.ready = fields.readiness === 'ready';
+  }
   return info;
 }
 
@@ -278,17 +482,32 @@ export function parseReplicationStatusResponse(response: string): ReplicationSta
       gtid: fields.current_gtid ?? '',
       statusStr: response
     };
-    if (fields.processed_events !== undefined) {
-      const parsed = parseInt(fields.processed_events, 10);
-      if (!Number.isNaN(parsed)) {
-        result.processedEvents = parsed;
-      }
+    if (fields.status !== undefined) {
+      result.state = fields.status as ReplicationState;
     }
-    if (fields.queue_size !== undefined) {
-      const parsed = parseInt(fields.queue_size, 10);
+    type NumericField = 'processedEvents' | 'queueSize' | 'crcErrors' | 'lastErrorCode' | 'lastAppliedUnixtime';
+    const assignInt = (key: NumericField | 'secondsSinceLastApplied', raw: string | undefined): void => {
+      if (raw === undefined) return;
+      const parsed = parseInt(raw, 10);
       if (!Number.isNaN(parsed)) {
-        result.queueSize = parsed;
+        result[key] = parsed;
       }
+    };
+    assignInt('processedEvents', fields.processed_events);
+    assignInt('queueSize', fields.queue_size);
+    assignInt('crcErrors', fields.crc_errors);
+    // The server reports 0 for "no error recorded"; leave the field unset so it
+    // is never mistaken for a code in the ErrorCode table.
+    if (fields.last_error_code !== undefined && fields.last_error_code !== '0') {
+      assignInt('lastErrorCode', fields.last_error_code);
+    }
+    assignInt('lastAppliedUnixtime', fields.last_applied_unixtime);
+    assignInt('secondsSinceLastApplied', fields.seconds_since_last_applied);
+    if (fields.schema_incompatible !== undefined) {
+      result.schemaIncompatible = fields.schema_incompatible === 'true';
+    }
+    if (fields.last_error !== undefined && fields.last_error !== '') {
+      result.lastError = fields.last_error;
     }
     return result;
   }
@@ -362,15 +581,21 @@ export function parseDumpStatusResponse(response: string): DumpStatus {
   const lines = response.split('\n').slice(1);
   const fields = parseColonKeyValueLines(lines);
   const status: DumpStatus = {
-    status: fields.status ?? 'idle',
+    status: fields.status ?? 'IDLE',
     filepath: fields.filepath ?? '',
     tablesTotal: parseIntOrZero(fields.tables_total),
     tablesProcessed: parseIntOrZero(fields.tables_processed),
     currentTable: fields.current_table ?? '',
-    elapsedSeconds: parseFloatOrZero(fields.elapsed_seconds)
+    elapsedSeconds: parseFloatOrZero(fields.elapsed_seconds),
+    saveInProgress: fields.save_in_progress === 'true',
+    loadInProgress: fields.load_in_progress === 'true',
+    replicationPausedForDump: fields.replication_paused_for_dump === 'true'
   };
   if (fields.error !== undefined) {
     status.error = fields.error;
+  }
+  if (fields.result_filepath !== undefined) {
+    status.resultFilepath = fields.result_filepath;
   }
   return status;
 }
@@ -389,18 +614,45 @@ export function parseCacheStatsResponse(response: string): CacheStats {
 
   const lines = response.split('\n').slice(1);
   const fields = parseColonKeyValueLines(lines);
-  return {
+  const currentMemoryBytes = parseIntOrZero(fields.current_memory_bytes);
+  const stats: CacheStats = {
     enabled: fields.enabled === 'true',
-    maxMemoryMb: parseFloatOrZero(fields.max_memory_mb),
-    currentMemoryMb: parseFloatOrZero(fields.current_memory_mb),
-    entries: parseIntOrZero(fields.entries),
-    hits: parseIntOrZero(fields.hits),
-    misses: parseIntOrZero(fields.misses),
-    hitRate: parseFloatOrZero(fields.hit_rate?.replace('%', '')),
+    totalQueries: parseIntOrZero(fields.total_queries),
+    hits: parseIntOrZero(fields.cache_hits),
+    misses: parseIntOrZero(fields.cache_misses),
+    hitRate: parseFloatOrZero(fields.hit_rate),
+    entries: parseIntOrZero(fields.current_entries),
+    currentMemoryBytes,
+    currentMemoryMb: currentMemoryBytes / BYTES_PER_MB,
+    invalidationIndexMemoryBytes: parseIntOrZero(fields.invalidation_index_memory_bytes),
+    invalidationQueueMemoryBytes: parseIntOrZero(fields.invalidation_queue_memory_bytes),
+    accountedMemoryBytes: parseIntOrZero(fields.accounted_memory_bytes),
     evictions: parseIntOrZero(fields.evictions),
-    ttlSeconds: parseIntOrZero(fields.ttl_seconds)
+    ttlExpirations: parseIntOrZero(fields.ttl_expirations),
+    rejections: parseIntOrZero(fields.rejection_count),
+    rejectionOversize: parseIntOrZero(fields.rejection_oversize),
+    rejectionMemoryBudget: parseIntOrZero(fields.rejection_memory_budget),
+    rejectionDuplicate: parseIntOrZero(fields.rejection_duplicate),
+    staleEntryRemovals: parseIntOrZero(fields.stale_entry_removals),
+    decompressionFailures: parseIntOrZero(fields.decompression_failures),
+    staleLruEntries: parseIntOrZero(fields.stale_lru_entries),
+    invalidationsImmediate: parseIntOrZero(fields.invalidations_immediate),
+    invalidationsDeferred: parseIntOrZero(fields.invalidations_deferred),
+    invalidationsBatches: parseIntOrZero(fields.invalidations_batches),
+    totalTimeSavedMs: parseFloatOrZero(fields.total_time_saved_ms)
   };
+  // The server omits the timing lines entirely until the first hit or miss.
+  if (fields.avg_cache_hit_time_ms !== undefined) {
+    stats.avgHitTimeMs = parseFloatOrZero(fields.avg_cache_hit_time_ms);
+  }
+  if (fields.avg_cache_miss_time_ms !== undefined) {
+    stats.avgMissTimeMs = parseFloatOrZero(fields.avg_cache_miss_time_ms);
+  }
+  return stats;
 }
+
+/** Bytes in one megabyte, for the display-oriented MB projections. */
+const BYTES_PER_MB = 1024 * 1024;
 
 function parseIntOrZero(value: string | undefined): number {
   if (value === undefined) return 0;

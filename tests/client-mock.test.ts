@@ -778,17 +778,36 @@ describe('MygramClient (mocked socket)', () => {
 
       const promise = client.cacheStats();
 
+      // Field names follow the server's CACHE STATS output verbatim.
       const response = [
         'OK CACHE_STATS',
+        '',
+        '# Cache',
         'enabled: true',
-        'max_memory_mb: 256',
-        'current_memory_mb: 128.5',
-        'entries: 1000',
-        'hits: 5000',
-        'misses: 200',
-        'hit_rate: 96.15%',
+        'total_queries: 5200',
+        'cache_hits: 5000',
+        'cache_misses: 200',
+        'hit_rate: 0.9615',
+        'current_entries: 1000',
+        'current_memory_bytes: 134742016',
+        'invalidation_index_memory_bytes: 4096',
+        'invalidation_queue_memory_bytes: 2048',
+        'accounted_memory_bytes: 134748160',
         'evictions: 50',
-        'ttl_seconds: 3600',
+        'ttl_expirations: 7',
+        'rejection_count: 3',
+        'rejection_oversize: 1',
+        'rejection_memory_budget: 1',
+        'rejection_duplicate: 1',
+        'stale_entry_removals: 2',
+        'decompression_failures: 0',
+        'stale_lru_entries: 4',
+        'invalidations_immediate: 11',
+        'invalidations_deferred: 22',
+        'invalidations_batches: 3',
+        'avg_cache_hit_time_ms: 0.120',
+        'avg_cache_miss_time_ms: 12.500',
+        'total_time_saved_ms: 61500.000',
         'END',
         ''
       ].join('\n');
@@ -797,14 +816,43 @@ describe('MygramClient (mocked socket)', () => {
 
       const stats = await promise;
       expect(stats.enabled).toBe(true);
-      expect(stats.maxMemoryMb).toBe(256);
-      expect(stats.currentMemoryMb).toBe(128.5);
-      expect(stats.entries).toBe(1000);
+      expect(stats.totalQueries).toBe(5200);
       expect(stats.hits).toBe(5000);
       expect(stats.misses).toBe(200);
-      expect(stats.hitRate).toBe(96.15);
+      expect(stats.hitRate).toBe(0.9615);
+      expect(stats.entries).toBe(1000);
+      expect(stats.currentMemoryBytes).toBe(134742016);
+      expect(stats.currentMemoryMb).toBeCloseTo(128.5, 3);
+      expect(stats.invalidationIndexMemoryBytes).toBe(4096);
+      expect(stats.invalidationQueueMemoryBytes).toBe(2048);
+      expect(stats.accountedMemoryBytes).toBe(134748160);
       expect(stats.evictions).toBe(50);
-      expect(stats.ttlSeconds).toBe(3600);
+      expect(stats.ttlExpirations).toBe(7);
+      expect(stats.rejections).toBe(3);
+      expect(stats.rejectionOversize).toBe(1);
+      expect(stats.rejectionMemoryBudget).toBe(1);
+      expect(stats.rejectionDuplicate).toBe(1);
+      expect(stats.staleEntryRemovals).toBe(2);
+      expect(stats.decompressionFailures).toBe(0);
+      expect(stats.staleLruEntries).toBe(4);
+      expect(stats.invalidationsImmediate).toBe(11);
+      expect(stats.invalidationsDeferred).toBe(22);
+      expect(stats.invalidationsBatches).toBe(3);
+      expect(stats.avgHitTimeMs).toBe(0.12);
+      expect(stats.avgMissTimeMs).toBe(12.5);
+      expect(stats.totalTimeSavedMs).toBe(61500);
+    });
+
+    it('leaves the timing fields undefined before the first hit or miss', async () => {
+      const { client, socket } = createConnectedClient();
+      await client.connect();
+
+      const promise = client.cacheStats();
+      socket.emit('data', ['OK CACHE_STATS', '', 'enabled: true', 'total_queries: 0', 'END', ''].join('\n'));
+
+      const stats = await promise;
+      expect(stats.avgHitTimeMs).toBeUndefined();
+      expect(stats.avgMissTimeMs).toBeUndefined();
     });
 
     it('should throw on invalid cache stats response', async () => {

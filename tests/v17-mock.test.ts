@@ -80,8 +80,23 @@ describe('escapeQueryString (C++ EscapeQueryString parity)', () => {
     expect(escapeQueryString("o'brien", 'query')).toBe('"o\'brien"');
   });
 
-  it('does NOT quote a lone backslash with no whitespace (matches C++ EscapeQueryString)', () => {
-    expect(escapeQueryString('a\\b', 'query')).toBe('a\\b');
+  it('quotes a lone backslash even without whitespace', () => {
+    // The server's tokenizer reads a backslash as an escape introducer, so an
+    // unquoted `a\b` would reach the index as `ab`.
+    expect(escapeQueryString('a\\b', 'query')).toBe('"a\\\\b"');
+  });
+
+  it('quotes parentheses so grouping characters stay literal', () => {
+    expect(escapeQueryString('foo(bar)', 'query')).toBe('"foo(bar)"');
+  });
+
+  it('quotes a standalone protocol keyword so it is matched as text', () => {
+    expect(escapeQueryString('AND', 'query')).toBe('"AND"');
+    expect(escapeQueryString('limit', 'query')).toBe('"limit"');
+  });
+
+  it('leaves a keyword embedded in a longer token unquoted', () => {
+    expect(escapeQueryString('android', 'query')).toBe('android');
   });
 
   it('rejects control characters before quoting', () => {

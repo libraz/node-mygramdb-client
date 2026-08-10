@@ -18,7 +18,9 @@
  */
 
 import { Socket } from 'node:net';
-import { ConnectionError, ProtocolError, TimeoutError } from './errors.js';
+import { buildAuthCommand } from './command-builder.js';
+import { ConnectionError, ProtocolError, ServerError, TimeoutError } from './errors.js';
+import { parseErrorFrame } from './response-parser.js';
 
 /**
  * Configuration consumed by {@link Connection}. Mirrors the resolved
@@ -33,17 +35,27 @@ export interface ConnectionConfig {
   /** Unix domain socket path; empty string means use TCP */
   socketPath: string;
   /**
-   * Per-operation timeout in milliseconds.
-   *
-   * Applied to:
-   *   - the `connect()` handshake (independently of socket idle timeout)
-   *   - each individual `sendCommand` (bounded from when it leaves the
-   *     queue, not from the moment it was enqueued)
+   * Default per-command timeout in milliseconds, bounded from when a command
+   * leaves the queue rather than from when it was enqueued. A caller may pass
+   * a longer deadline to {@link Connection.sendCommand} for an operation that
+   * legitimately outruns an ordinary request.
    *
    * The socket's own `setTimeout` is also configured to this value so
    * the underlying socket reports idle peers via the `timeout` event.
    */
   timeout: number;
+  /**
+   * Timeout for establishing the socket and completing `AUTH`, in
+   * milliseconds. Separated from {@link timeout} because reaching a server is
+   * a different kind of wait from running a query on it.
+   */
+  connectTimeout: number;
+  /**
+   * Largest single response frame accepted, in bytes. A frame that grows past
+   * this is not a frame the client can trust, so the connection is dropped
+   * rather than buffered further.
+   */
+  maxResponseBytes: number;
   /**
    * Reconnect once and resend a command when the socket is found dead before
    * the command is written. A failure after the write is surfaced as a
@@ -51,12 +63,19 @@ export interface ConnectionConfig {
    * to reject immediately with {@link ConnectionError}.
    */
   autoReconnect: boolean;
+  /**
+   * Administrative token sent as `AUTH <token>` on every successful connect,
+   * including a reconnect (MygramDB v1.10+). An empty string skips the step.
+   */
+  adminToken: string;
 }
 
 interface PendingCommand {
   command: string;
   resolve: (value: string) => void;
   reject: (error: Error) => void;
+  /** Overrides {@link ConnectionConfig.timeout} for this command only */
+  timeout?: number;
 }
 
 /**
@@ -77,6 +96,13 @@ export class Connection {
   private inflight: PendingCommand | null = null;
   private inflightTimeout: NodeJS.Timeout | null = null;
   private reconnecting = false;
+  /**
+   * Set from the moment a connect starts until its `AUTH` has been answered.
+   * The socket becomes writable one microtask before {@link connect} resumes to
+   * send the AUTH, so without this gate a caller that issues a command without
+   * awaiting `connect()` would have it dispatched ahead of the authentication.
+   */
+  private authPending = false;
 
   /**
    * Build a connection bound to a given configuration.
@@ -88,20 +114,59 @@ export class Connection {
   }
 
   /**
-   * Establish the socket. Resolves on the `connect` event, rejects on
-   * `error` or after {@link ConnectionConfig.timeout} milliseconds.
+   * Establish the socket and, when {@link ConnectionConfig.adminToken} is set,
+   * authenticate on it before reporting success.
    *
    * Calling `connect()` after a successful connection is a no-op.
    *
-   * @returns {Promise<void>} Resolves once the socket is open
+   * @returns {Promise<void>} Resolves once the socket is open and authenticated
    * @throws {ConnectionError} On socket error or close before open
    * @throws {TimeoutError} When the handshake exceeds the configured timeout
+   * @throws {ServerError} When the server rejects the administrative token
    */
   async connect(): Promise<void> {
     if (this.connected) {
-      return Promise.resolve();
+      return;
     }
 
+    // Armed before the socket opens so no command can slip in ahead of the
+    // AUTH during the microtask between the `connect` event and this method
+    // resuming.
+    this.authPending = this.config.adminToken !== '';
+
+    try {
+      await this.openSocket();
+    } catch (error) {
+      this.authPending = false;
+      throw error;
+    }
+
+    if (!this.authPending) {
+      return;
+    }
+
+    try {
+      await this.sendAuthCommand();
+      this.authPending = false;
+    } catch (error) {
+      this.authPending = false;
+      // A rejected token leaves a socket that cannot run administrative
+      // commands. Failing the connect outright is clearer than handing back a
+      // half-usable connection, and lets the pool discard the slot.
+      this.disconnect();
+      throw error;
+    }
+
+    this.dispatchNext();
+  }
+
+  /**
+   * Open the socket. Resolves on the `connect` event, rejects on `error` or
+   * after {@link ConnectionConfig.connectTimeout} milliseconds.
+   *
+   * @returns {Promise<void>} Resolves once the socket is open
+   */
+  private openSocket(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const socket = new Socket();
       this.socket = socket;
@@ -173,7 +238,7 @@ export class Connection {
         // events don't surface to callers.
         socket.destroy();
         this.socket = null;
-      }, this.config.timeout);
+      }, this.config.connectTimeout);
 
       if (this.config.socketPath) {
         socket.connect({ path: this.config.socketPath });
@@ -192,6 +257,9 @@ export class Connection {
     const socket = this.socket;
     this.socket = null;
     this.connected = false;
+    // Never leave the dispatcher parked behind an authentication that can no
+    // longer complete.
+    this.authPending = false;
     if (socket) {
       socket.destroy();
     }
@@ -218,12 +286,15 @@ export class Connection {
    * The returned promise rejects with:
    *   - {@link ConnectionError} if not connected, or the socket fails
    *   - {@link TimeoutError} on per-command timeout
-   *   - {@link ProtocolError} if the server returns `ERROR <message>`
+   *   - {@link ServerError} if the server returns an `ERROR` frame, carrying the
+   *     numeric code when the server is MygramDB v1.10+
    *
    * @param {string} command - Command text without trailing CRLF
+   * @param {number} [timeout] - Deadline for this command in milliseconds,
+   *   overriding {@link ConnectionConfig.timeout}
    * @returns {Promise<string>} Server response (CRLF-normalized, trimmed)
    */
-  sendCommand(command: string): Promise<string> {
+  sendCommand(command: string, timeout?: number): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       if (!this.connected || this.socket === null) {
         // A dead socket discovered before the command is written is recovered
@@ -234,13 +305,17 @@ export class Connection {
           return;
         }
       }
-      this.queue.push({ command, resolve, reject });
+      const pending: PendingCommand = { command, resolve, reject };
+      if (timeout !== undefined) {
+        pending.timeout = timeout;
+      }
+      this.queue.push(pending);
       this.dispatchNext();
     });
   }
 
   private dispatchNext(): void {
-    if (this.inflight !== null || this.reconnecting) return;
+    if (this.inflight !== null || this.reconnecting || this.authPending) return;
     const next = this.queue.shift();
     if (!next) return;
     if (!this.connected || this.socket === null) {
@@ -256,6 +331,35 @@ export class Connection {
     }
 
     this.beginInflight(next);
+  }
+
+  /**
+   * Send `AUTH <token>` ahead of anything waiting in the queue.
+   *
+   * The command is handed straight to {@link beginInflight} rather than to
+   * {@link sendCommand}: during a reconnect the dispatcher is deliberately
+   * parked, so a queued AUTH would never be written and the reconnect would
+   * never finish. Going direct is safe because the queue is idle at this point
+   * — a fresh socket has no in-flight command — and any commands queued
+   * meanwhile stay behind the AUTH, since the dispatcher will not start one
+   * while a command is in flight.
+   *
+   * @returns {Promise<string>} The `OK AUTHENTICATED` response
+   */
+  private sendAuthCommand(): Promise<string> {
+    const command = buildAuthCommand(this.config.adminToken);
+    return new Promise<string>((resolve, reject) => {
+      if (this.inflight !== null) {
+        // Unreachable on a freshly opened socket, which has no in-flight
+        // command. Fail loudly rather than clobber the entry or park the AUTH
+        // behind a gate that only the AUTH itself can lift.
+        reject(new ConnectionError('Cannot authenticate while another command is in flight'));
+        return;
+      }
+      // AUTH is part of establishing the connection, so it is bounded by the
+      // connect deadline rather than the ordinary command one.
+      this.beginInflight({ command, resolve, reject, timeout: this.config.connectTimeout });
+    });
   }
 
   private reconnectAndSend(command: PendingCommand): void {
@@ -291,7 +395,7 @@ export class Connection {
         pending.reject(new TimeoutError('Command timeout'));
       }
       this.dispatchNext();
-    }, this.config.timeout);
+    }, command.timeout ?? this.config.timeout);
 
     socket.write(`${command.command}\r\n`);
   }
@@ -304,6 +408,24 @@ export class Connection {
       return;
     }
     this.responseBuffer += data;
+    if (this.responseBuffer.length > this.config.maxResponseBytes) {
+      // The frame boundary is now past whatever the client is willing to hold,
+      // so the rest of this stream cannot be resynchronized. Drop the
+      // connection rather than keep buffering.
+      const overflow = new ProtocolError(
+        `Response exceeds maxResponseBytes (${this.config.maxResponseBytes} bytes); connection closed`
+      );
+      this.responseBuffer = '';
+      const socket = this.socket;
+      this.socket = null;
+      this.connected = false;
+      this.authPending = false;
+      if (socket) {
+        socket.destroy();
+      }
+      this.failPending(overflow);
+      return;
+    }
     if (!isResponseComplete(this.responseBuffer)) {
       return;
     }
@@ -326,8 +448,9 @@ export class Connection {
 
     const response = raw.replace(/\r\n/g, '\n').trim();
 
-    if (response.startsWith('ERROR ')) {
-      pending.reject(new ProtocolError(response.substring(6)));
+    const errorFrame = parseErrorFrame(response);
+    if (errorFrame !== null) {
+      pending.reject(new ServerError(errorFrame.message, errorFrame.code, response));
     } else {
       pending.resolve(response);
     }

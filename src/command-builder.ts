@@ -9,17 +9,63 @@
 import {
   ensureQueryLengthWithinLimit,
   ensureSafeCommandValue,
-  ensureSafeFilterIdentifiers,
   ensureSafeIdentifier,
   ensureSafeStringArray,
   escapeQueryString,
+  normalizeFilters,
   quoteCommandArgument,
   validateFacetColumn,
   validateFuzzy,
   validateHighlight
 } from './command-utils.js';
 import { InputValidationError } from './errors.js';
-import type { CountOptions, FacetOptions, SearchOptions, SearchRawOptions } from './types.js';
+import type {
+  CountOptions,
+  FacetOptions,
+  FilterCondition,
+  QueryMode,
+  SearchOptions,
+  SearchRawOptions
+} from './types.js';
+
+/**
+ * Render the search text for the requested query mode.
+ *
+ * Literal mode routes through {@link escapeQueryString}, which quotes reserved
+ * words, whitespace and grouping characters so user text is matched as a
+ * phrase. Boolean mode sends the expression verbatim so the server's AST parser
+ * sees the `AND`/`OR`/`NOT` operators and parentheses, and only rejects control
+ * characters. Mirrors the C++ client's `Search` with `SearchOptions::query_mode`
+ * (MygramDB v1.9+).
+ *
+ * @param {string} query - Raw search text
+ * @param {QueryMode} queryMode - Requested interpretation
+ * @param {string} fieldName - Field name for clearer error messages
+ * @returns {string} Wire representation of the search text
+ * @throws {InputValidationError} When boolean mode is given an empty expression
+ */
+function renderSearchText(query: string, queryMode: QueryMode, fieldName: string): string {
+  if (queryMode !== 'boolean') {
+    return escapeQueryString(query, fieldName);
+  }
+  if (query === '') {
+    throw new InputValidationError(`Input for ${fieldName} must not be empty in boolean query mode`);
+  }
+  return ensureSafeCommandValue(query, fieldName);
+}
+
+/**
+ * Append one `FILTER <column> <op> <value>` clause per condition.
+ *
+ * @param {string[]} parts - Command token list to append to
+ * @param {FilterCondition[]} filters - Normalized conditions
+ * @returns {void}
+ */
+function appendFilterClauses(parts: string[], filters: FilterCondition[]): void {
+  filters.forEach(({ column, op, value }) => {
+    parts.push('FILTER', column, op ?? '=', escapeQueryString(value, `filters.${column}.value`));
+  });
+}
 
 /**
  * Append the LIMIT / OFFSET clause to a command's token list, matching the
@@ -66,11 +112,12 @@ export function buildSearchCommand(
   maxQueryLength: number
 ): string {
   const {
+    queryMode = 'literal',
     limit = 1000,
     offset = 0,
     andTerms = [],
     notTerms = [],
-    filters = {},
+    filters,
     sortColumn = '',
     sortDesc = true,
     fuzzy = 0,
@@ -78,10 +125,10 @@ export function buildSearchCommand(
   } = options;
 
   const safeTable = ensureSafeIdentifier(table, 'table');
-  const safeQuery = escapeQueryString(query, 'query');
+  const safeQuery = renderSearchText(query, queryMode, 'query');
   ensureSafeStringArray(andTerms, 'andTerms');
   ensureSafeStringArray(notTerms, 'notTerms');
-  const safeFilters = ensureSafeFilterIdentifiers(filters);
+  const safeFilters = normalizeFilters(filters);
   const safeSortColumn = sortColumn ? ensureSafeIdentifier(sortColumn, 'sortColumn') : '';
   validateFuzzy(fuzzy);
   validateHighlight(highlight);
@@ -105,12 +152,14 @@ export function buildSearchCommand(
   notTerms.forEach((term) => {
     parts.push('NOT', escapeQueryString(term, 'notTerms'));
   });
-  Object.entries(safeFilters).forEach(([key, value]) => {
-    parts.push('FILTER', key, '=', escapeQueryString(value, `filters.${key}.value`));
-  });
+  appendFilterClauses(parts, safeFilters);
 
   if (safeSortColumn) {
     parts.push('SORT', safeSortColumn, sortDesc ? 'DESC' : 'ASC');
+  } else if (!sortDesc) {
+    // Ascending primary-key order must be requested explicitly; descending is
+    // the server default and needs no clause. Mirrors the C++ client.
+    parts.push('SORT', 'ASC');
   }
 
   if (fuzzy > 0) {
@@ -192,13 +241,13 @@ export function buildSearchRawCommand(table: string, rawQuery: string, options: 
  * @returns {string} Wire command (no trailing CRLF)
  */
 export function buildCountCommand(table: string, query: string, options: CountOptions, maxQueryLength: number): string {
-  const { andTerms = [], notTerms = [], filters = {} } = options;
+  const { queryMode = 'literal', andTerms = [], notTerms = [], filters } = options;
 
   const safeTable = ensureSafeIdentifier(table, 'table');
-  const safeQuery = escapeQueryString(query, 'query');
+  const safeQuery = renderSearchText(query, queryMode, 'query');
   ensureSafeStringArray(andTerms, 'andTerms');
   ensureSafeStringArray(notTerms, 'notTerms');
-  const safeFilters = ensureSafeFilterIdentifiers(filters);
+  const safeFilters = normalizeFilters(filters);
 
   ensureQueryLengthWithinLimit(
     {
@@ -218,9 +267,7 @@ export function buildCountCommand(table: string, query: string, options: CountOp
   notTerms.forEach((term) => {
     parts.push('NOT', escapeQueryString(term, 'notTerms'));
   });
-  Object.entries(safeFilters).forEach(([key, value]) => {
-    parts.push('FILTER', key, '=', escapeQueryString(value, `filters.${key}.value`));
-  });
+  appendFilterClauses(parts, safeFilters);
   return parts.join(' ');
 }
 
@@ -242,13 +289,13 @@ export function buildFacetCommand(
   options: FacetOptions,
   maxQueryLength: number
 ): string {
-  const { query = '', andTerms = [], notTerms = [], filters = {}, limit = 0 } = options;
+  const { query = '', queryMode = 'literal', andTerms = [], notTerms = [], filters, limit = 0, offset = 0 } = options;
 
   const safeTable = ensureSafeIdentifier(table, 'table');
   validateFacetColumn(column);
   ensureSafeStringArray(andTerms, 'andTerms');
   ensureSafeStringArray(notTerms, 'notTerms');
-  const safeFilters = ensureSafeFilterIdentifiers(filters);
+  const safeFilters = normalizeFilters(filters);
   ensureQueryLengthWithinLimit(
     {
       query,
@@ -263,23 +310,37 @@ export function buildFacetCommand(
   const parts: string[] = ['FACET', safeTable, column];
 
   if (query !== '') {
-    parts.push('QUERY', escapeQueryString(query, 'query'));
+    parts.push('QUERY', renderSearchText(query, queryMode, 'query'));
     andTerms.forEach((term) => {
       parts.push('AND', escapeQueryString(term, 'andTerms'));
     });
     notTerms.forEach((term) => {
       parts.push('NOT', escapeQueryString(term, 'notTerms'));
     });
-    Object.entries(safeFilters).forEach(([key, value]) => {
-      parts.push('FILTER', key, '=', escapeQueryString(value, `filters.${key}.value`));
-    });
+    appendFilterClauses(parts, safeFilters);
   }
 
-  if (limit > 0) {
-    parts.push('LIMIT', `${limit}`);
-  }
+  appendLimitOffset(parts, limit, offset);
 
   return parts.join(' ');
+}
+
+/**
+ * Build an `AUTH <token>` command line (MygramDB v1.10+).
+ *
+ * The token is sent as a single token, quoted when it contains whitespace or a
+ * quote character. A v1.10 server compares it in constant time and redacts it
+ * from request logs.
+ *
+ * @param {string} token - Administrative token
+ * @returns {string} Wire command (no trailing CRLF)
+ * @throws {InputValidationError} When the token is empty or contains control characters
+ */
+export function buildAuthCommand(token: string): string {
+  if (token === '') {
+    throw new InputValidationError('Input for token must not be empty');
+  }
+  return `AUTH ${quoteCommandArgument(token, 'token')}`;
 }
 
 /**

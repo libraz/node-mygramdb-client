@@ -8,6 +8,7 @@
  */
 
 import {
+  buildAuthCommand,
   buildCountCommand,
   buildFacetCommand,
   buildGetCommand,
@@ -19,12 +20,13 @@ import {
   buildSyncStopCommand
 } from './command-builder.js';
 import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier, quoteCommandArgument } from './command-utils.js';
-import { ConnectionError, ProtocolError } from './errors.js';
+import { ConnectionError, ProtocolError, ServerError } from './errors.js';
 import {
   parseCacheStatsResponse,
   parseCountResponse,
   parseDocumentResponse,
   parseDumpStatusResponse,
+  parseErrorFrame,
   parseFacetResponse,
   parseInfoResponse,
   parseReplicationStatusResponse,
@@ -67,17 +69,34 @@ interface NativeBinding {
   simplifySearchExpression(expression: string): SimplifiedExpression;
 }
 
+/** Default request deadline, in milliseconds. */
+const DEFAULT_TIMEOUT = 5000;
+
+/** Default deadline for DUMP SAVE / LOAD / VERIFY and OPTIMIZE, in milliseconds. */
+const DEFAULT_LONG_OPERATION_TIMEOUT = 600000;
+
+/** Default cap on one response frame: 64 MiB. */
+const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+
 const DEFAULT_CONFIG: Required<ClientConfig> = {
   host: '127.0.0.1',
   port: 11016,
   socketPath: '',
-  timeout: 5000,
+  timeout: DEFAULT_TIMEOUT,
   recvBufferSize: 65536,
   maxQueryLength: DEFAULT_MAX_QUERY_LENGTH,
-  // The native transport routes every command through the addon's sendCommand
-  // and does not implement JS-side reconnect; the field is accepted for config
-  // parity but has no effect on the native path.
-  autoReconnect: false
+  // The addon owns the socket and applies one deadline to every command, so
+  // the connect, operation-specific and frame-size settings are accepted for
+  // configuration parity and have no effect on the native path. The same is
+  // true of auto-reconnect, which the addon does not implement.
+  connectTimeout: DEFAULT_TIMEOUT,
+  dumpSaveTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
+  dumpLoadTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
+  dumpVerifyTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
+  optimizeTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
+  maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
+  autoReconnect: false,
+  adminToken: ''
 };
 
 /**
@@ -110,8 +129,13 @@ export class NativeMygramClient {
   /**
    * Connect to MygramDB server.
    *
+   * When {@link ClientConfig.adminToken} is configured, the client also sends
+   * `AUTH <token>` on the new connection and fails the connect if the server
+   * rejects it.
+   *
    * @returns {Promise<void>} Resolves when connected
    * @throws {ConnectionError} If connection fails
+   * @throws {ServerError} When the server rejects the administrative token
    */
   async connect(): Promise<void> {
     if (this.connected) {
@@ -138,6 +162,36 @@ export class NativeMygramClient {
       }
       throw new ConnectionError(error instanceof Error ? error.message : 'Connection failed');
     }
+
+    if (this.config.adminToken === '') {
+      return;
+    }
+
+    try {
+      await this.authenticate();
+    } catch (error) {
+      // A rejected token leaves a handle that cannot run administrative
+      // commands; drop it rather than hand back a half-usable connection.
+      this.disconnect();
+      throw error;
+    }
+  }
+
+  /**
+   * Authenticate the current connection for administrative commands
+   * (MygramDB v1.10+).
+   *
+   * Authentication is per connection, so it must be repeated after any
+   * reconnect — set {@link ClientConfig.adminToken} to have the client do that
+   * automatically instead of calling this method.
+   *
+   * @param {string} [token] - Token to send; defaults to {@link ClientConfig.adminToken}
+   * @returns {Promise<void>} Resolves once the server accepts the token
+   * @throws {InputValidationError} When no token is configured or supplied
+   * @throws {ServerError} With code `ErrorCode.PermissionDenied` when the token is rejected
+   */
+  async authenticate(token?: string): Promise<void> {
+    await this.sendCommand(buildAuthCommand(token ?? this.config.adminToken));
   }
 
   /**
@@ -393,14 +447,18 @@ export class NativeMygramClient {
   }
 
   /**
-   * Save a dump of the index to the specified file path.
+   * Save a dump of the index to the specified file path. Omit the path to
+   * write to the server's configured dump directory and default filename.
    *
-   * @param {string} filepath - File path on the server to save the dump
+   * @param {string} [filepath] - File path on the server to save the dump
    * @returns {Promise<string>} The filepath where the dump is being saved
    */
-  async dumpSave(filepath: string): Promise<string> {
-    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
-    const response = await this.sendCommand(`DUMP SAVE ${safeFilepath}`);
+  async dumpSave(filepath?: string): Promise<string> {
+    const command =
+      filepath === undefined || filepath === ''
+        ? 'DUMP SAVE'
+        : `DUMP SAVE ${quoteCommandArgument(filepath, 'filepath')}`;
+    const response = await this.sendCommand(command);
     if (response.startsWith('OK DUMP_STARTED ')) {
       return response.substring('OK DUMP_STARTED '.length);
     }
@@ -532,8 +590,9 @@ export class NativeMygramClient {
       try {
         const rawResponse = this.native.sendCommand(this.clientHandle, command);
         const response = rawResponse.replace(/\r\n/g, '\n').trim();
-        if (response.startsWith('ERROR ')) {
-          throw new ProtocolError(response.substring(6));
+        const errorFrame = parseErrorFrame(response);
+        if (errorFrame !== null) {
+          throw new ServerError(errorFrame.message, errorFrame.code, response);
         }
         resolve(response);
       } catch (error) {

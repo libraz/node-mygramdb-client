@@ -13,6 +13,7 @@ import {
   getClientType,
   isNativeAvailable
 } from '../src/client-factory';
+import { parseCacheStatsResponse } from '../src/response-parser';
 import {
   simplifySearchExpression as jsSimplifySearchExpression,
   parseSearchExpression
@@ -91,8 +92,9 @@ describe('Search Expression Parsing', () => {
     it('should parse simple terms', () => {
       const result = parseSearchExpression('hello world');
 
-      expect(result.requiredTerms).toEqual([]);
-      expect(result.optionalTerms).toEqual(['hello', 'world']);
+      // Unprefixed terms are required: the expression means an implicit AND.
+      expect(result.requiredTerms).toEqual(['hello', 'world']);
+      expect(result.optionalTerms).toEqual([]);
       expect(result.excludedTerms).toEqual([]);
     });
 
@@ -106,7 +108,7 @@ describe('Search Expression Parsing', () => {
     it('should parse excluded terms with -', () => {
       const result = parseSearchExpression('search -excluded');
 
-      expect(result.optionalTerms).toContain('search');
+      expect(result.requiredTerms).toContain('search');
       expect(result.excludedTerms).toEqual(['excluded']);
     });
 
@@ -114,15 +116,16 @@ describe('Search Expression Parsing', () => {
       const result = parseSearchExpression('"exact phrase" other');
 
       // Quotes preserved for phrase search semantics
-      expect(result.optionalTerms).toContain('"exact phrase"');
-      expect(result.optionalTerms).toContain('other');
+      expect(result.requiredTerms).toContain('"exact phrase"');
+      expect(result.requiredTerms).toContain('other');
     });
 
     it('should handle OR operator', () => {
       const result = parseSearchExpression('cat OR dog');
 
-      expect(result.optionalTerms).toContain('cat');
-      expect(result.optionalTerms).toContain('dog');
+      // An OR chain is captured whole so its semantics survive conversion.
+      expect(result.rawExpression).toBe('cat OR dog');
+      expect(result.requiredTerms).toEqual([]);
     });
 
     it('should handle mixed operators', () => {
@@ -130,7 +133,7 @@ describe('Search Expression Parsing', () => {
 
       expect(result.requiredTerms).toContain('golang');
       // Quotes preserved for phrase search semantics
-      expect(result.optionalTerms).toContain('"web framework"');
+      expect(result.requiredTerms).toContain('"web framework"');
       expect(result.excludedTerms).toContain('deprecated');
     });
   });
@@ -749,73 +752,53 @@ error: disk full`;
   });
 
   describe('CACHE STATS response parsing', () => {
+    // Field names below are the server's verbatim CACHE STATS output.
     it('should parse cache stats response', () => {
       const response = `OK CACHE_STATS
+
+# Cache
 enabled: true
-max_memory_mb: 32
-current_memory_mb: 12.3
-entries: 45
-hits: 1234
-misses: 567
-hit_rate: 68.5%
+total_queries: 1801
+cache_hits: 1234
+cache_misses: 567
+hit_rate: 0.6852
+current_entries: 45
+current_memory_bytes: 12897484
 evictions: 10
-ttl_seconds: 3600`;
+total_time_saved_ms: 900.000
+END`;
 
-      const lines = response.split('\n').slice(1);
-      const stats: Record<string, string | number | boolean> = {};
-
-      lines.forEach((line) => {
-        const colonIndex = line.indexOf(':');
-        if (colonIndex === -1) return;
-        const key = line.substring(0, colonIndex).trim();
-        const value = line.substring(colonIndex + 1).trim();
-        if (!key) return;
-
-        switch (key) {
-          case 'enabled':
-            stats[key] = value === 'true';
-            break;
-          case 'hit_rate':
-            stats[key] = parseFloat(value.replace('%', ''));
-            break;
-          case 'max_memory_mb':
-          case 'current_memory_mb':
-            stats[key] = parseFloat(value);
-            break;
-          default:
-            stats[key] = parseInt(value, 10);
-            break;
-        }
-      });
+      const stats = parseCacheStatsResponse(response);
 
       expect(stats.enabled).toBe(true);
-      expect(stats.max_memory_mb).toBe(32);
-      expect(stats.current_memory_mb).toBe(12.3);
-      expect(stats.entries).toBe(45);
+      expect(stats.totalQueries).toBe(1801);
       expect(stats.hits).toBe(1234);
       expect(stats.misses).toBe(567);
-      expect(stats.hit_rate).toBe(68.5);
+      expect(stats.hitRate).toBe(0.6852);
+      expect(stats.entries).toBe(45);
+      expect(stats.currentMemoryBytes).toBe(12897484);
       expect(stats.evictions).toBe(10);
-      expect(stats.ttl_seconds).toBe(3600);
+      expect(stats.totalTimeSavedMs).toBe(900);
     });
 
     it('should parse disabled cache stats', () => {
       const response = `OK CACHE_STATS
-enabled: false
-max_memory_mb: 0
-current_memory_mb: 0
-entries: 0
-hits: 0
-misses: 0
-hit_rate: 0%
-evictions: 0
-ttl_seconds: 0`;
 
-      expect(response.startsWith('OK CACHE_STATS')).toBe(true);
-      const lines = response.split('\n').slice(1);
-      const enabledLine = lines.find((l) => l.trim().startsWith('enabled:'));
-      expect(enabledLine).toBeDefined();
-      expect(enabledLine!.includes('false')).toBe(true);
+# Cache
+enabled: false
+total_queries: 0
+cache_hits: 0
+cache_misses: 0
+hit_rate: 0.0000
+current_entries: 0
+current_memory_bytes: 0
+END`;
+
+      const stats = parseCacheStatsResponse(response);
+
+      expect(stats.enabled).toBe(false);
+      expect(stats.entries).toBe(0);
+      expect(stats.hitRate).toBe(0);
     });
   });
 
@@ -845,10 +828,10 @@ ttl_seconds: 0`;
     });
 
     it('should normalize CRLF in CACHE STATS response', () => {
-      const crlfResponse = 'OK CACHE_STATS\r\nenabled: true\r\nhits: 100\r\n\r\n';
+      const crlfResponse = 'OK CACHE_STATS\r\nenabled: true\r\ncache_hits: 100\r\n\r\n';
       const normalized = crlfResponse.replace(/\r\n/g, '\n').trim();
 
-      expect(normalized).toBe('OK CACHE_STATS\nenabled: true\nhits: 100');
+      expect(normalized).toBe('OK CACHE_STATS\nenabled: true\ncache_hits: 100');
     });
   });
 });

@@ -163,65 +163,133 @@ export function parseSearchExpression(expression: string): SearchExpression {
     throw new Error('Search expression cannot be empty');
   }
 
-  const tokenizer = new Tokenizer(expression);
-  const tokens = tokenizer.tokenize();
-
+  const tokens = new Tokenizer(expression).tokenize();
   const result: SearchExpression = {
     requiredTerms: [],
     excludedTerms: [],
     optionalTerms: [],
-    rawExpression: expression
+    rawExpression: ''
   };
 
-  let hasComplexExpr = false;
+  let index = 0;
+  const peek = (offset = 0): Token => tokens[Math.min(index + offset, tokens.length - 1)];
+  const quoted = (token: Token): string => (token.type === TokenType.QUOTED ? `"${token.value}"` : token.value);
+  const appendRaw = (fragment: string): void => {
+    result.rawExpression = result.rawExpression === '' ? fragment : `${result.rawExpression} ${fragment}`;
+  };
 
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-
-    if (token.type === TokenType.EOF) break;
-
-    if (token.type === TokenType.PLUS) {
-      // Required term or grouped expression
-      const nextToken = tokens[i + 1];
-      if (!nextToken) {
-        throw new Error(`Expected term after '+' at position ${token.position}`);
+  /**
+   * Consume a balanced parenthesized group and render it back as a query
+   * sub-expression. `+` and `-` inside the group are kept verbatim, matching
+   * the reference implementation.
+   */
+  const captureParenExpression = (): string => {
+    let depth = 0;
+    let out = '';
+    let previous: TokenType = TokenType.EOF;
+    do {
+      const token = peek();
+      switch (token.type) {
+        case TokenType.LPAREN:
+          depth += 1;
+          out += '(';
+          break;
+        case TokenType.RPAREN:
+          depth -= 1;
+          out += ')';
+          break;
+        case TokenType.WORD:
+        case TokenType.QUOTED:
+          if (previous === TokenType.WORD || previous === TokenType.QUOTED || previous === TokenType.RPAREN) {
+            out += ' ';
+          }
+          out += quoted(token);
+          break;
+        case TokenType.OR:
+          out += ' OR ';
+          break;
+        case TokenType.PLUS:
+          out += '+';
+          break;
+        case TokenType.MINUS:
+          out += '-';
+          break;
+        default:
+          throw new Error(`Unbalanced parentheses at position ${token.position}`);
       }
+      previous = token.type;
+      if (depth > 0) index += 1;
+    } while (depth > 0);
+    index += 1; // Skip the closing paren
+    return out;
+  };
 
-      if (nextToken.type === TokenType.LPAREN) {
-        // Grouped expression - mark as complex
-        hasComplexExpr = true;
-        i += 1; // Skip the opening paren
-      } else if (nextToken.type === TokenType.WORD || nextToken.type === TokenType.QUOTED) {
-        // Add quotes back for quoted terms (phrase search)
-        const term = nextToken.type === TokenType.QUOTED ? `"${nextToken.value}"` : nextToken.value;
-        result.requiredTerms.push(term);
-        i += 1; // Skip the term we just processed
+  /** Consume a term and every `OR <term>` that follows it. */
+  const captureOrExpression = (): string => {
+    let out = quoted(peek());
+    index += 1;
+    while (peek().type === TokenType.OR) {
+      out += ' OR ';
+      index += 1;
+      const token = peek();
+      if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
+        out += quoted(token);
+        index += 1;
+      } else if (token.type === TokenType.LPAREN) {
+        out += captureParenExpression();
       } else {
-        throw new Error(`Expected term after '+' at position ${token.position}`);
+        throw new Error(`Expected term after 'OR' at position ${token.position}`);
       }
-    } else if (token.type === TokenType.MINUS) {
-      // Excluded term
-      const nextToken = tokens[i + 1];
-      if (!nextToken || (nextToken.type !== TokenType.WORD && nextToken.type !== TokenType.QUOTED)) {
-        throw new Error(`Expected term after '-' at position ${token.position}`);
-      }
-      // Add quotes back for quoted terms (phrase search)
-      const term = nextToken.type === TokenType.QUOTED ? `"${nextToken.value}"` : nextToken.value;
-      result.excludedTerms.push(term);
-      i += 1; // Skip the term we just processed
-    } else if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
-      // Optional term (no prefix) - add quotes back for quoted terms
-      const term = token.type === TokenType.QUOTED ? `"${token.value}"` : token.value;
-      result.optionalTerms.push(term);
-    } else if (token.type === TokenType.OR || token.type === TokenType.LPAREN || token.type === TokenType.RPAREN) {
-      hasComplexExpr = true;
     }
-  }
+    return out;
+  };
 
-  // If we have complex expressions (OR, grouping), we keep the raw expression
-  // Otherwise, we can simplify
-  if (!hasComplexExpr) {
-    result.rawExpression = '';
+  /** Consume the operand of a `+` / `-` prefix, which may be a whole group. */
+  const parsePrefixedTerm = (prefix: string): string => {
+    const token = peek();
+    if (token.type === TokenType.LPAREN) {
+      return captureParenExpression();
+    }
+    if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
+      index += 1;
+      return quoted(token);
+    }
+    throw new Error(`Expected term after '${prefix}' at position ${token.position}`);
+  };
+
+  while (peek().type !== TokenType.EOF) {
+    const token = peek();
+    switch (token.type) {
+      case TokenType.PLUS:
+        index += 1;
+        result.requiredTerms.push(parsePrefixedTerm('+'));
+        break;
+      case TokenType.MINUS:
+        index += 1;
+        result.excludedTerms.push(parsePrefixedTerm('-'));
+        break;
+      case TokenType.LPAREN:
+        appendRaw(captureParenExpression());
+        break;
+      case TokenType.WORD:
+      case TokenType.QUOTED:
+        // A term followed by OR opens a raw sub-expression; anything else is a
+        // plain term, and plain terms combine with implicit AND.
+        if (peek(1).type === TokenType.OR) {
+          appendRaw(captureOrExpression());
+        } else {
+          result.requiredTerms.push(quoted(token));
+          index += 1;
+        }
+        break;
+      case TokenType.OR:
+        throw new Error(`Unexpected 'OR' operator at position ${token.position}`);
+      case TokenType.RPAREN:
+        throw new Error(`Unexpected ')' at position ${token.position}`);
+      default:
+        index += 1;
+        break;
+    }
   }
 
   return result;
@@ -234,42 +302,38 @@ export function parseSearchExpression(expression: string): SearchExpression {
  * @returns {boolean} True if expression has OR operators or grouping
  */
 export function hasComplexExpression(expr: SearchExpression): boolean {
-  return expr.rawExpression.length > 0 && (expr.rawExpression.includes('OR') || expr.rawExpression.includes('('));
+  if (expr.rawExpression.length > 0) {
+    return true;
+  }
+  // A parenthesized group after a unary +/- is retained as one term. Detect
+  // that structural form rather than an "OR" substring inside a token, which
+  // would misclassify ordinary words such as ORDER and ORANGE.
+  const isParenthesized = (term: string): boolean => term.length >= 2 && term.startsWith('(') && term.endsWith(')');
+  return expr.requiredTerms.some(isParenthesized) || expr.excludedTerms.some(isParenthesized);
 }
 
 /**
  * Convert search expression to query string for QueryASTParser
  *
- * Generates proper boolean query string:
- * - Required terms: joined with AND
- * - Excluded terms: prefixed with NOT
- * - Optional terms: joined with OR (if no required terms)
+ * Every positive term is required, so the parts compose with AND:
+ * - Required terms joined with AND
+ * - Excluded terms prefixed with NOT
+ * - The raw OR/grouped sub-expression parenthesized and appended
  *
  * @param {SearchExpression} expr - Parsed search expression
  * @returns {string} Query string compatible with QueryASTParser
  */
 export function toQueryString(expr: SearchExpression): string {
-  const parts: string[] = [];
+  const parts: string[] = [...expr.requiredTerms];
 
-  // Add required terms
-  if (expr.requiredTerms.length > 0) {
-    parts.push(expr.requiredTerms.join(' AND '));
-  }
+  // `optionalTerms` is never populated by the parser and is kept only so an
+  // externally built expression object still round-trips. Terms placed there
+  // are required, exactly like the parser's own output.
+  parts.push(...expr.optionalTerms);
+  parts.push(...expr.excludedTerms.map((term) => `NOT ${term}`));
 
-  // Add optional terms
-  if (expr.optionalTerms.length > 0) {
-    if (expr.requiredTerms.length === 0) {
-      // No required terms, treat optional as OR
-      parts.push(expr.optionalTerms.join(' OR '));
-    } else {
-      // Has required terms, treat optional as AND
-      parts.push(expr.optionalTerms.join(' AND '));
-    }
-  }
-
-  // Add excluded terms
-  if (expr.excludedTerms.length > 0) {
-    parts.push(expr.excludedTerms.map((term) => `NOT ${term}`).join(' AND '));
+  if (expr.rawExpression !== '') {
+    parts.push(`(${expr.rawExpression})`);
   }
 
   return parts.join(' AND ');
@@ -282,9 +346,9 @@ export function toQueryString(expr: SearchExpression): string {
  * and toQueryString() in one call.
  *
  * Examples:
- * - `+golang tutorial` → `golang AND (tutorial)`
+ * - `+golang tutorial` → `golang AND tutorial`
  * - `+golang -old` → `golang AND NOT old`
- * - `python OR ruby` → `python OR ruby`
+ * - `python OR ruby` → `(python OR ruby)`
  * - `+golang +(tutorial OR guide)` → `golang AND (tutorial OR guide)`
  *
  * @param {string} expression - Web-style search expression
@@ -292,14 +356,7 @@ export function toQueryString(expr: SearchExpression): string {
  * @throws {Error} If expression is invalid
  */
 export function convertSearchExpression(expression: string): string {
-  const expr = parseSearchExpression(expression);
-
-  // If has complex expression with OR/grouping, return as-is
-  if (hasComplexExpression(expr)) {
-    return expr.rawExpression;
-  }
-
-  return toQueryString(expr);
+  return toQueryString(parseSearchExpression(expression));
 }
 
 /**
@@ -341,6 +398,13 @@ function simplifyParsedExpression(expr: SearchExpression): {
   mainTerm: string;
   andTerms: string[];
 } {
+  // Only one of them can become `mainTerm`, so a positive term next to an
+  // OR/grouped sub-expression has no simplified form. Refuse rather than
+  // silently drop one. Excluded terms are fine: they have their own slot.
+  if (expr.rawExpression.length > 0 && expr.requiredTerms.length > 0) {
+    throw new Error('Expression cannot be represented by the simplified client API');
+  }
+
   if (expr.requiredTerms.length > 0) {
     const allPositive = [...expr.requiredTerms, ...expr.optionalTerms];
     return { mainTerm: allPositive[0], andTerms: allPositive.slice(1) };

@@ -1,5 +1,5 @@
 import { InputValidationError } from './errors.js';
-import type { HighlightOptions } from './types.js';
+import type { FilterCondition, FilterOperator, FilterSpec, HighlightOptions } from './types.js';
 
 export const DEFAULT_MAX_QUERY_LENGTH = 128;
 
@@ -87,20 +87,76 @@ export function ensureSafeIdentifier(value: string, fieldName: string): string {
   return value;
 }
 
+/** Comparison operators the server accepts in a FILTER clause. */
+const FILTER_OPERATORS: readonly FilterOperator[] = ['=', '!=', '<>', '>', '>=', '<', '<='];
+
 /**
- * Validate every key in a filters record as an identifier and every value
- * as a safe command token. Keys are sent unquoted (so cannot contain
- * whitespace), but values may contain spaces.
+ * Normalize either accepted {@link FilterSpec} shape into a validated,
+ * canonical list of conditions with an explicit operator.
  *
- * @param {Record<string, string>} filters - Filter map
- * @returns {Record<string, string>} The original filters when safe
+ * Column names are sent unquoted so they are validated as identifiers (no
+ * whitespace); values may contain spaces and are only checked for control
+ * characters, since the caller quotes them. An omitted operator becomes `=`,
+ * which is what every MygramDB version supports.
+ *
+ * @param {FilterSpec | undefined} filters - Record or array form (undefined yields an empty list)
+ * @returns {FilterCondition[]} Validated conditions with a resolved operator
+ * @throws {InputValidationError} When a column, operator or value is unsafe
  */
-export function ensureSafeFilterIdentifiers(filters: Record<string, string>): Record<string, string> {
-  Object.entries(filters).forEach(([key, value]) => {
-    ensureSafeIdentifier(key, `filters.${key}.key`);
-    ensureSafeCommandValue(value, `filters.${key}.value`);
+export function normalizeFilters(filters: FilterSpec | undefined): FilterCondition[] {
+  if (filters === undefined) {
+    return [];
+  }
+
+  const raw: FilterCondition[] = Array.isArray(filters)
+    ? filters
+    : Object.entries(filters).map(([column, spec]) =>
+        typeof spec === 'string' ? { column, value: spec } : { column, op: spec.op, value: spec.value }
+      );
+
+  return raw.map((condition) => {
+    const { column } = condition;
+    ensureSafeIdentifier(column, `filters.${column}.key`);
+    const op = condition.op ?? '=';
+    if (!FILTER_OPERATORS.includes(op)) {
+      throw new InputValidationError(
+        `Invalid filter operator "${op}" for ${column}: must be one of ${FILTER_OPERATORS.join(', ')}`
+      );
+    }
+    ensureSafeCommandValue(condition.value, `filters.${column}.value`);
+    return { column, op, value: condition.value };
   });
-  return filters;
+}
+
+/**
+ * Protocol clause keywords. A search term equal to one of these must be quoted
+ * or the server's parser would read it as the start of a clause instead of as
+ * text to match. Mirrors the keyword set in the C++ client's
+ * `EscapeQueryString`.
+ */
+const QUERY_RESERVED_WORDS: ReadonlySet<string> = new Set([
+  'AND',
+  'OR',
+  'NOT',
+  'FILTER',
+  'SORT',
+  'LIMIT',
+  'OFFSET',
+  'HIGHLIGHT',
+  'FUZZY',
+  'FACET',
+  'ORDER'
+]);
+
+/**
+ * Which inputs force a token to be quoted, beyond whitespace, `"` and `'`,
+ * which always do.
+ */
+interface TokenQuotingRules {
+  /** `(` and `)` force quoting, so grouping characters are matched literally */
+  parentheses: boolean;
+  /** A standalone protocol keyword forces quoting */
+  reservedWords: boolean;
 }
 
 /**
@@ -115,21 +171,22 @@ export function ensureSafeFilterIdentifiers(filters: Record<string, string>): Re
  * are dropped. Values that need no quoting are returned verbatim so simple
  * single-token queries stay byte-identical on the wire.
  *
- * `quoteOnBackslash` selects which upstream helper is mirrored: query strings
- * follow `EscapeQueryString` (a lone backslash does NOT force quoting), while
- * command arguments follow `QuoteCommandArgumentIfNeeded` (a backslash does).
+ * `rules` selects which upstream helper is mirrored: query strings follow
+ * `EscapeQueryString` (a standalone protocol keyword, a parenthesis or a
+ * backslash all force quoting so the text is matched literally), while command
+ * arguments follow `QuoteCommandArgumentIfNeeded` (only a backslash does).
  *
  * @param {string} value - Value to quote (already control-char validated)
- * @param {boolean} quoteOnBackslash - Whether a lone `\` forces quoting
+ * @param {TokenQuotingRules} rules - Which characters beyond whitespace/quotes force quoting
  * @returns {string} Wire-safe single token
  */
-function quoteTokenIfNeeded(value: string, quoteOnBackslash: boolean): string {
+function quoteTokenIfNeeded(value: string, rules: TokenQuotingRules): string {
   if (value === '') {
     return '""';
   }
 
-  let needsQuotes = false;
-  for (let i = 0; i < value.length; i += 1) {
+  let needsQuotes = rules.reservedWords && QUERY_RESERVED_WORDS.has(value.toUpperCase());
+  for (let i = 0; i < value.length && !needsQuotes; i += 1) {
     const char = value[i];
     if (
       char === ' ' ||
@@ -138,10 +195,10 @@ function quoteTokenIfNeeded(value: string, quoteOnBackslash: boolean): string {
       char === '\r' ||
       char === '"' ||
       char === "'" ||
-      (quoteOnBackslash && char === '\\')
+      char === '\\' ||
+      (rules.parentheses && (char === '(' || char === ')'))
     ) {
       needsQuotes = true;
-      break;
     }
   }
 
@@ -166,12 +223,16 @@ function quoteTokenIfNeeded(value: string, quoteOnBackslash: boolean): string {
 }
 
 /**
- * Escape a query string for transmission. Empty strings are surfaced as
- * the explicit token `""` so the server receives a well-formed empty
- * argument. Non-empty strings are validated for control characters and then
- * quoted when they contain whitespace or quote characters, matching the C++
- * client's `EscapeQueryString` so multi-word phrases and boolean expressions
- * reach the server as a single token.
+ * Escape a literal query string for transmission. Empty strings are surfaced as
+ * the explicit token `""` so the server receives a well-formed empty argument.
+ * Non-empty strings are validated for control characters and then quoted when
+ * they contain whitespace, quote characters, a backslash or a parenthesis, or
+ * when the whole value is a protocol keyword such as `AND`.
+ *
+ * This matches the C++ client's `EscapeQueryString`, so literal user text keeps
+ * its meaning: `search('articles', 'alpha AND beta')` looks for the phrase, and
+ * only {@link ./command-builder.buildSearchRawCommand} or a `boolean` query mode
+ * hands `AND` to the server's expression parser.
  *
  * @param {string} value - Query string value
  * @param {string} fieldName - Field name for clearer error messages
@@ -183,7 +244,7 @@ export function escapeQueryString(value: string, fieldName: string): string {
     return '""';
   }
   ensureSafeCommandValue(value, fieldName);
-  return quoteTokenIfNeeded(value, false);
+  return quoteTokenIfNeeded(value, { parentheses: true, reservedWords: true });
 }
 
 /**
@@ -203,7 +264,7 @@ export function quoteCommandArgument(value: string, fieldName: string): string {
   if (value !== '') {
     ensureSafeCommandValue(value, fieldName);
   }
-  return quoteTokenIfNeeded(value, true);
+  return quoteTokenIfNeeded(value, { parentheses: false, reservedWords: false });
 }
 
 /**
@@ -284,26 +345,16 @@ export function ensureSafeStringArray(values: string[], fieldName: string): stri
 }
 
 /**
- * Validates a filters record by ensuring both keys and values are safe.
- *
- * @param {Record<string, string>} filters - Filter map
- * @returns {Record<string, string>} The original filters when safe
- */
-export function ensureSafeFilters(filters: Record<string, string>): Record<string, string> {
-  Object.entries(filters).forEach(([key, value]) => {
-    ensureSafeCommandValue(key, `filters.${key}.key`);
-    ensureSafeCommandValue(value, `filters.${key}.value`);
-  });
-  return filters;
-}
-
-/**
  * Calculate the query expression length using the same logic as the server.
+ *
+ * The server counts the search text, every AND/NOT term, each filter's column
+ * and value, and the sort column. Filter operators and clause keywords are not
+ * counted, so `>=` costs the same as `=`.
  *
  * @param {string} query - Base search text
  * @param {string[]} andTerms - Additional AND terms
  * @param {string[]} notTerms - NOT terms
- * @param {Record<string, string>} filters - Filters map
+ * @param {FilterCondition[]} filters - Normalized filter conditions
  * @param {string} sortColumn - Sort column if specified
  * @returns {number} Total expression length
  */
@@ -311,7 +362,7 @@ export function calculateQueryExpressionLength(
   query: string,
   andTerms: string[],
   notTerms: string[],
-  filters: Record<string, string>,
+  filters: FilterCondition[],
   sortColumn: string
 ): number {
   let { length } = query;
@@ -325,8 +376,8 @@ export function calculateQueryExpressionLength(
   accumulateTerms(andTerms);
   accumulateTerms(notTerms);
 
-  Object.entries(filters).forEach(([key, value]) => {
-    length += key.length;
+  filters.forEach(({ column, value }) => {
+    length += column.length;
     length += value.length;
   });
 
@@ -344,7 +395,7 @@ export function calculateQueryExpressionLength(
  * @param {string} params.query - Search text
  * @param {string[]} params.andTerms - Additional AND terms
  * @param {string[]} params.notTerms - NOT terms
- * @param {Record<string, string>} params.filters - Filters map
+ * @param {FilterCondition[]} params.filters - Normalized filter conditions
  * @param {string} params.sortColumn - Sort column
  * @param {number} maxLength - Maximum allowed length (0 disables check)
  * @throws {InputValidationError} When the query exceeds the limit
@@ -360,7 +411,7 @@ export function ensureQueryLengthWithinLimit(
     query: string;
     andTerms: string[];
     notTerms: string[];
-    filters: Record<string, string>;
+    filters: FilterCondition[];
     sortColumn: string;
   },
   maxLength: number

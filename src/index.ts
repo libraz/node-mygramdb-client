@@ -10,6 +10,8 @@
 export { MygramClient } from './client.js';
 export { createMygramClient, getClientType, isNativeAvailable, simplifySearchExpression } from './client-factory.js';
 export { parseTableIdentity, qualifyTableIdentity } from './command-utils.js';
+export type { ErrorCodeValue } from './error-codes.js';
+export { ErrorCode, isAuthRequiredErrorCode, isConnectionLostErrorCode, isRetryableErrorCode } from './error-codes.js';
 export {
   CircuitOpenError,
   ConnectionError,
@@ -17,6 +19,7 @@ export {
   MygramError,
   PoolOverloadError,
   ProtocolError,
+  ServerError,
   TimeoutError
 } from './errors.js';
 export type { SimplifiedExpression } from './native-client.js';
@@ -51,7 +54,13 @@ export type {
   FacetOptions,
   FacetResponse,
   FacetValue,
+  FilterCondition,
+  FilterOperator,
+  FilterSpec,
+  FilterValue,
   HighlightOptions,
+  QueryMode,
+  ReplicationState,
   ReplicationStatus,
   SearchOptions,
   SearchRawOptions,

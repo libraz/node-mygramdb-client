@@ -8,6 +8,7 @@
  */
 
 import {
+  buildAuthCommand,
   buildCountCommand,
   buildFacetCommand,
   buildGetCommand,
@@ -47,14 +48,34 @@ import type {
   ServerInfo
 } from './types.js';
 
+/** Default request deadline, in milliseconds. */
+const DEFAULT_TIMEOUT = 5000;
+
+/**
+ * Default deadline for DUMP SAVE / LOAD / VERIFY and OPTIMIZE, in
+ * milliseconds. These walk the whole index, so they get their own budget
+ * instead of the request timeout.
+ */
+const DEFAULT_LONG_OPERATION_TIMEOUT = 600000;
+
+/** Default cap on one response frame: 64 MiB. */
+const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+
 const DEFAULT_CONFIG: Required<ClientConfig> = {
   host: '127.0.0.1',
   port: 11016,
   socketPath: '',
-  timeout: 5000,
+  timeout: DEFAULT_TIMEOUT,
+  connectTimeout: DEFAULT_TIMEOUT,
+  dumpSaveTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
+  dumpLoadTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
+  dumpVerifyTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
+  optimizeTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
   recvBufferSize: 65536,
+  maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
   maxQueryLength: DEFAULT_MAX_QUERY_LENGTH,
-  autoReconnect: false
+  autoReconnect: false,
+  adminToken: ''
 };
 
 /**
@@ -88,25 +109,55 @@ export class MygramClient {
     if (typeof merged.maxQueryLength !== 'number' || Number.isNaN(merged.maxQueryLength)) {
       merged.maxQueryLength = DEFAULT_MAX_QUERY_LENGTH;
     }
+    // A caller who raises `timeout` alone expects connecting to follow it.
+    merged.connectTimeout = config.connectTimeout ?? merged.timeout;
     this.config = merged;
     this.connection = new Connection({
       host: merged.host,
       port: merged.port,
       socketPath: merged.socketPath,
       timeout: merged.timeout,
-      autoReconnect: merged.autoReconnect
+      connectTimeout: merged.connectTimeout,
+      maxResponseBytes: merged.maxResponseBytes,
+      autoReconnect: merged.autoReconnect,
+      adminToken: merged.adminToken
     });
   }
 
   /**
    * Connect to MygramDB server.
    *
+   * When {@link ClientConfig.adminToken} is configured, the client also sends
+   * `AUTH <token>` on the new connection and fails the connect if the server
+   * rejects it.
+   *
    * @returns {Promise<void>} Resolves when connected
    * @throws {ConnectionError} On connection failure
    * @throws {TimeoutError} When the connect handshake exceeds the timeout
+   * @throws {ServerError} When the server rejects the administrative token
    */
   connect(): Promise<void> {
     return this.connection.connect();
+  }
+
+  /**
+   * Authenticate the current connection for administrative commands
+   * (MygramDB v1.10+).
+   *
+   * A v1.10 server gates `DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`,
+   * `OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and `SHOW VARIABLES` behind an
+   * `AUTH` issued on the same TCP connection. Authentication is per connection,
+   * so it must be repeated after any reconnect — set
+   * {@link ClientConfig.adminToken} to have the client do that automatically
+   * instead of calling this method.
+   *
+   * @param {string} [token] - Token to send; defaults to {@link ClientConfig.adminToken}
+   * @returns {Promise<void>} Resolves once the server accepts the token
+   * @throws {InputValidationError} When no token is configured or supplied
+   * @throws {ServerError} With code `ErrorCode.PermissionDenied` when the token is rejected
+   */
+  async authenticate(token?: string): Promise<void> {
+    await this.connection.sendCommand(buildAuthCommand(token ?? this.config.adminToken));
   }
 
   /**
@@ -342,12 +393,18 @@ export class MygramClient {
    * Save a dump of the index to the specified file path. Use {@link dumpStatus}
    * to monitor progress.
    *
-   * @param {string} filepath - File path on the server to save the dump
+   * Omit the path to write to the server's configured dump directory and
+   * default filename.
+   *
+   * @param {string} [filepath] - File path on the server to save the dump
    * @returns {Promise<string>} The filepath where the dump is being saved
    */
-  async dumpSave(filepath: string): Promise<string> {
-    const safeFilepath = quoteCommandArgument(filepath, 'filepath');
-    const response = await this.connection.sendCommand(`DUMP SAVE ${safeFilepath}`);
+  async dumpSave(filepath?: string): Promise<string> {
+    const command =
+      filepath === undefined || filepath === ''
+        ? 'DUMP SAVE'
+        : `DUMP SAVE ${quoteCommandArgument(filepath, 'filepath')}`;
+    const response = await this.connection.sendCommand(command, this.config.dumpSaveTimeout);
     if (response.startsWith('OK DUMP_STARTED ')) {
       return response.substring('OK DUMP_STARTED '.length);
     }
@@ -365,7 +422,7 @@ export class MygramClient {
    */
   async dumpLoad(filepath: string): Promise<void> {
     const safeFilepath = quoteCommandArgument(filepath, 'filepath');
-    const response = await this.connection.sendCommand(`DUMP LOAD ${safeFilepath}`);
+    const response = await this.connection.sendCommand(`DUMP LOAD ${safeFilepath}`, this.config.dumpLoadTimeout);
     expectOk(response, 'Failed to load dump');
   }
 
@@ -387,7 +444,7 @@ export class MygramClient {
    */
   async dumpVerify(filepath: string): Promise<string> {
     const safeFilepath = quoteCommandArgument(filepath, 'filepath');
-    const response = await this.connection.sendCommand(`DUMP VERIFY ${safeFilepath}`);
+    const response = await this.connection.sendCommand(`DUMP VERIFY ${safeFilepath}`, this.config.dumpVerifyTimeout);
     expectOk(response, 'Failed to verify dump');
     return response;
   }
@@ -455,7 +512,7 @@ export class MygramClient {
    */
   async optimize(table?: string): Promise<void> {
     const command = table ? `OPTIMIZE ${ensureSafeIdentifier(table, 'table')}` : 'OPTIMIZE';
-    const response = await this.connection.sendCommand(command);
+    const response = await this.connection.sendCommand(command, this.config.optimizeTimeout);
     expectOk(response, 'Failed to optimize');
   }
 

@@ -47,7 +47,7 @@ describe('command utils', () => {
         query: 'hello',
         andTerms: ['world'],
         notTerms: [],
-        filters: { status: 'ok' },
+        filters: [{ column: 'status', op: '=' as const, value: 'ok' }],
         sortColumn: 'published_at'
       };
       const limit = calculateQueryExpressionLength(
@@ -67,7 +67,7 @@ describe('command utils', () => {
             query: 'a'.repeat(10),
             andTerms: [],
             notTerms: [],
-            filters: {},
+            filters: [],
             sortColumn: ''
           },
           5
@@ -76,7 +76,13 @@ describe('command utils', () => {
     });
 
     it('should count filters and terms in expression length', () => {
-      const length = calculateQueryExpressionLength('base', ['foo'], ['bar'], { status: 'ok' }, 'id');
+      const length = calculateQueryExpressionLength(
+        'base',
+        ['foo'],
+        ['bar'],
+        [{ column: 'status', op: '=', value: 'ok' }],
+        'id'
+      );
       expect(length).toBe('base'.length + 'foo'.length + 'bar'.length + 'status'.length + 'ok'.length + 'id'.length);
     });
   });

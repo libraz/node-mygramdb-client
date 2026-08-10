@@ -219,7 +219,10 @@ describe('CACHE STATS / DUMP STATUS / DUMP INFO multi-line END detection', () =>
     const promise = client.cacheStats();
 
     // Mirror real server output: blank line after header AND before END.
-    socket.emit('data', 'OK CACHE_STATS\r\n\r\n# Cache\r\nenabled: true\r\nhits: 100\r\nmisses: 5\r\n\r\nEND\r\n');
+    socket.emit(
+      'data',
+      'OK CACHE_STATS\r\n\r\n# Cache\r\nenabled: true\r\ncache_hits: 100\r\ncache_misses: 5\r\n\r\nEND\r\n'
+    );
 
     const stats = await promise;
     expect(stats.enabled).toBe(true);

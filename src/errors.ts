@@ -60,6 +60,62 @@ export class ProtocolError extends MygramError {
 }
 
 /**
+ * Error returned by the server in an `ERROR` frame.
+ *
+ * Extends {@link ProtocolError} so code written against earlier releases, which
+ * saw every server-side rejection as a `ProtocolError`, keeps working. New code
+ * should branch on {@link ServerError.code} rather than on the message text.
+ *
+ * MygramDB v1.10+ prefixes the frame payload with a numeric code
+ * (`ERROR 4007 Table not found`); `code` carries that value and `message` holds
+ * only the human-readable remainder. Against an older server the frame has no
+ * code, so `code` is `undefined` and `message` is the whole payload.
+ *
+ * @class
+ * @extends ProtocolError
+ *
+ * @example
+ * ```typescript
+ * import { ErrorCode, ServerError } from 'mygramdb-client';
+ *
+ * try {
+ *   await client.search('missing_table', 'hello');
+ * } catch (error) {
+ *   if (error instanceof ServerError && error.code === ErrorCode.TableNotFound) {
+ *     // handle the unknown table
+ *   }
+ * }
+ * ```
+ */
+export class ServerError extends ProtocolError {
+  /**
+   * Numeric error code from the `ERROR` frame, or `undefined` when the server
+   * sent an untyped frame (pre-v1.10). Typed as `number` rather than the
+   * {@link ../error-codes.ErrorCode} union because a newer server may send a
+   * code this client does not know yet.
+   */
+  readonly code: number | undefined;
+
+  /** The complete `ERROR` frame as received, including the code prefix. */
+  readonly rawFrame: string;
+
+  /**
+   * Create a server error
+   *
+   * @param {string} message - Human-readable message (code prefix removed)
+   * @param {number | undefined} code - Numeric error code, if the server sent one
+   * @param {string} rawFrame - The complete `ERROR` frame as received
+   */
+  constructor(message: string, code: number | undefined, rawFrame: string) {
+    super(message);
+    this.name = 'ServerError';
+    this.code = code;
+    this.rawFrame = rawFrame;
+    Object.setPrototypeOf(this, ServerError.prototype);
+  }
+}
+
+/**
  * Timeout error thrown when request times out
  *
  * @class

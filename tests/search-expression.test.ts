@@ -11,9 +11,9 @@ import {
 describe('parseSearchExpression', () => {
   it('should parse simple term', () => {
     const expr = parseSearchExpression('golang');
-    expect(expr.requiredTerms).toEqual([]);
+    expect(expr.requiredTerms).toEqual(['golang']);
     expect(expr.excludedTerms).toEqual([]);
-    expect(expr.optionalTerms).toEqual(['golang']);
+    expect(expr.optionalTerms).toEqual([]);
   });
 
   it('should parse required term with + prefix', () => {
@@ -32,16 +32,16 @@ describe('parseSearchExpression', () => {
 
   it('should parse multiple terms with implicit AND', () => {
     const expr = parseSearchExpression('golang tutorial');
-    expect(expr.requiredTerms).toEqual([]);
+    expect(expr.requiredTerms).toEqual(['golang', 'tutorial']);
     expect(expr.excludedTerms).toEqual([]);
-    expect(expr.optionalTerms).toEqual(['golang', 'tutorial']);
+    expect(expr.optionalTerms).toEqual([]);
   });
 
-  it('should parse mixed required and optional terms', () => {
+  it('should treat an unprefixed term as required, like a + prefixed one', () => {
     const expr = parseSearchExpression('+golang tutorial');
-    expect(expr.requiredTerms).toEqual(['golang']);
+    expect(expr.requiredTerms).toEqual(['golang', 'tutorial']);
     expect(expr.excludedTerms).toEqual([]);
-    expect(expr.optionalTerms).toEqual(['tutorial']);
+    expect(expr.optionalTerms).toEqual([]);
   });
 
   it('should parse mixed required and excluded terms', () => {
@@ -53,17 +53,17 @@ describe('parseSearchExpression', () => {
 
   it('should parse quoted phrases', () => {
     const expr = parseSearchExpression('"machine learning" tutorial');
-    expect(expr.requiredTerms).toEqual([]);
-    expect(expr.excludedTerms).toEqual([]);
     // Quoted phrases preserve quotes for phrase search semantics
-    expect(expr.optionalTerms).toEqual(['"machine learning"', 'tutorial']);
+    expect(expr.requiredTerms).toEqual(['"machine learning"', 'tutorial']);
+    expect(expr.excludedTerms).toEqual([]);
+    expect(expr.optionalTerms).toEqual([]);
   });
 
   it('should parse full-width spaces', () => {
     const expr = parseSearchExpression('機械学習　チュートリアル');
-    expect(expr.requiredTerms).toEqual([]);
+    expect(expr.requiredTerms).toEqual(['機械学習', 'チュートリアル']);
     expect(expr.excludedTerms).toEqual([]);
-    expect(expr.optionalTerms).toEqual(['機械学習', 'チュートリアル']);
+    expect(expr.optionalTerms).toEqual([]);
   });
 
   it('should detect OR operator as complex expression', () => {
@@ -71,9 +71,16 @@ describe('parseSearchExpression', () => {
     expect(expr.rawExpression).toBe('python OR ruby');
   });
 
-  it('should detect parentheses as complex expression', () => {
+  it('should keep a group after + as a single required term', () => {
     const expr = parseSearchExpression('+golang +(tutorial OR guide)');
-    expect(expr.rawExpression).toBe('+golang +(tutorial OR guide)');
+    expect(expr.requiredTerms).toEqual(['golang', '(tutorial OR guide)']);
+    expect(expr.rawExpression).toBe('');
+  });
+
+  it('should capture only the OR sub-expression as the raw expression', () => {
+    const expr = parseSearchExpression('golang python OR ruby');
+    expect(expr.requiredTerms).toEqual(['golang']);
+    expect(expr.rawExpression).toBe('python OR ruby');
   });
 
   it('should throw on empty expression', () => {
@@ -111,10 +118,10 @@ describe('hasComplexExpression', () => {
 });
 
 describe('toQueryString', () => {
-  it('should convert simple terms to OR', () => {
+  it('should join unprefixed terms with AND', () => {
     const expr = parseSearchExpression('golang tutorial');
     const query = toQueryString(expr);
-    expect(query).toBe('golang OR tutorial');
+    expect(query).toBe('golang AND tutorial');
   });
 
   it('should convert required terms to AND', () => {
@@ -151,7 +158,7 @@ describe('toQueryString', () => {
 describe('convertSearchExpression', () => {
   it('should convert simple AND expression', () => {
     const query = convertSearchExpression('golang tutorial');
-    expect(query).toBe('golang OR tutorial');
+    expect(query).toBe('golang AND tutorial');
   });
 
   it('should convert required terms', () => {
@@ -166,18 +173,23 @@ describe('convertSearchExpression', () => {
 
   it('should preserve OR expressions', () => {
     const query = convertSearchExpression('python OR ruby');
-    expect(query).toBe('python OR ruby');
+    expect(query).toBe('(python OR ruby)');
+  });
+
+  it('should AND a term with an OR sub-expression instead of dropping it', () => {
+    const query = convertSearchExpression('golang python OR ruby');
+    expect(query).toBe('golang AND (python OR ruby)');
   });
 
   it('should preserve grouped expressions', () => {
     const query = convertSearchExpression('+golang +(tutorial OR guide)');
-    expect(query).toBe('+golang +(tutorial OR guide)');
+    expect(query).toBe('golang AND (tutorial OR guide)');
   });
 
   it('should handle quoted phrases', () => {
     const query = convertSearchExpression('"machine learning" tutorial');
     // Quotes preserved for phrase search
-    expect(query).toBe('"machine learning" OR tutorial');
+    expect(query).toBe('"machine learning" AND tutorial');
   });
 });
 
@@ -239,9 +251,15 @@ describe('simplifySearchExpression', () => {
 
   it('should preserve excluded terms alongside an OR-only main term', () => {
     const result = simplifySearchExpression('python OR ruby -old');
-    expect(result.mainTerm).toBe('(python OR ruby -old)');
+    expect(result.mainTerm).toBe('(python OR ruby)');
     expect(result.andTerms).toEqual([]);
     expect(result.notTerms).toEqual(['old']);
+  });
+
+  it('should refuse a term combined with an OR sub-expression', () => {
+    expect(() => simplifySearchExpression('golang python OR ruby')).toThrow(
+      'Expression cannot be represented by the simplified client API'
+    );
   });
 });
 
