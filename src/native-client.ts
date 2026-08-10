@@ -20,6 +20,7 @@ import {
   buildSyncStopCommand
 } from './command-builder.js';
 import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier, quoteCommandArgument } from './command-utils.js';
+import { applyClientDefaults } from './config-utils.js';
 import { ConnectionError, ProtocolError, ServerError } from './errors.js';
 import {
   parseCacheStatsResponse,
@@ -119,7 +120,7 @@ export class NativeMygramClient {
    */
   constructor(native: NativeBinding, config: ClientConfig = {}) {
     this.native = native;
-    const merged: Required<ClientConfig> = { ...DEFAULT_CONFIG, ...config };
+    const merged: Required<ClientConfig> = applyClientDefaults(DEFAULT_CONFIG, config);
     if (typeof merged.maxQueryLength !== 'number' || Number.isNaN(merged.maxQueryLength)) {
       merged.maxQueryLength = DEFAULT_MAX_QUERY_LENGTH;
     }

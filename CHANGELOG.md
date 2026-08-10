@@ -95,6 +95,12 @@ parsed, and a client that sets no `adminToken` behaves exactly as before.
   input carrying OR or grouping; it previously echoed the web syntax back
   verbatim, `+` and `-` included, and dropped any term sitting outside the
   group.
+- A client option present but set to `undefined` no longer overwrites its
+  default. Assembling a config from optional inputs is ordinary JavaScript, and
+  `new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN })` with the
+  variable unset tried to authenticate with an empty token and failed the
+  connect with a `TypeError`; `timeout: undefined` reached the socket the same
+  way. Both now behave as though the key were absent.
 
 ### Changed
 

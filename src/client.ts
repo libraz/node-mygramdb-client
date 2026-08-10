@@ -20,6 +20,7 @@ import {
   buildSyncStopCommand
 } from './command-builder.js';
 import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier, quoteCommandArgument } from './command-utils.js';
+import { applyClientDefaults } from './config-utils.js';
 import { Connection } from './connection.js';
 import { ProtocolError } from './errors.js';
 import {
@@ -105,7 +106,7 @@ export class MygramClient {
    * @param {ClientConfig} [config={}] - Client configuration
    */
   constructor(config: ClientConfig = {}) {
-    const merged: Required<ClientConfig> = { ...DEFAULT_CONFIG, ...config };
+    const merged: Required<ClientConfig> = applyClientDefaults(DEFAULT_CONFIG, config);
     if (typeof merged.maxQueryLength !== 'number' || Number.isNaN(merged.maxQueryLength)) {
       merged.maxQueryLength = DEFAULT_MAX_QUERY_LENGTH;
     }

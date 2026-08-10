@@ -163,6 +163,17 @@ describe('MygramDB v1.10 AUTH', () => {
     expect(commands(socket)).toHaveLength(0);
   });
 
+  it('treats an explicitly undefined adminToken as no token at all', async () => {
+    // `{ adminToken: process.env.MYGRAM_ADMIN_TOKEN }` is an ordinary way to
+    // build a config, and the key is then present with an undefined value. It
+    // must not be read as a request to authenticate with an empty token.
+    const client = new MygramClient({ adminToken: undefined });
+    const { socket, connectPromise } = await openSocket(client);
+    await connectPromise;
+    expect(commands(socket)).toHaveLength(0);
+    expect(client.isConnected()).toBe(true);
+  });
+
   it('fails the connect and drops the socket when the token is rejected', async () => {
     const client = new MygramClient({ adminToken: 'wrong' });
     const { socket, connectPromise } = await openSocket(client);

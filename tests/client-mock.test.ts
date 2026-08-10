@@ -47,6 +47,23 @@ describe('MygramClient (mocked socket)', () => {
     vi.restoreAllMocks();
   });
 
+  describe('config defaults', () => {
+    it('ignores an explicitly undefined option instead of clearing its default', async () => {
+      // A config assembled from optional inputs carries keys with an undefined
+      // value. Overwriting a default with `undefined` used to reach the socket
+      // and fail with a raw TypeError rather than anything from the taxonomy.
+      const client = new MygramClient({ host: 'localhost', port: 11016, timeout: undefined });
+      const promise = client.connect();
+
+      const socket = getInternalSocket(client);
+      expect(socket.setTimeout).toHaveBeenCalledWith(5000);
+
+      socket.emit('connect');
+      await expect(promise).resolves.toBeUndefined();
+      expect(client.isConnected()).toBe(true);
+    });
+  });
+
   describe('connect', () => {
     it('should connect via TCP', async () => {
       const client = new MygramClient({ host: 'localhost', port: 11016 });
