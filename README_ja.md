@@ -3,13 +3,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/libraz/node-mygramdb-client/ci.yml?branch=main&label=CI)](https://github.com/libraz/node-mygramdb-client/actions)
 [![npm](https://img.shields.io/npm/v/mygramdb-client)](https://www.npmjs.com/package/mygramdb-client)
 [![codecov](https://codecov.io/gh/libraz/node-mygramdb-client/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/node-mygramdb-client)
-[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリです。MygramDB は MySQL レプリケーションに対応した高性能なインメモリ全文検索エンジンです。
 
-**対応サーバー:** MygramDB 1.6 以降に対応し、1.10.2 までのプロトコルを実装しています。サーバーは自身より新しいオプションを拒否し、古いサーバーの `ERROR` には数値コードが付きません。新しいサーバーを必要とするオプションは [API リファレンス](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/api-reference.md)に明記しています。
+**対応サーバー:** MygramDB 1.6 以降に対応し、1.10.2 までのプロトコルを実装しています。サーバーは自身より新しいオプションを拒否し、古いサーバーの `ERROR` には数値コードが付きません。新しいサーバーを必要とするオプションは [API リファレンス](docs/ja/api-reference.md)に明記しています。
 
-<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/request-path-ja.svg" alt="検索の呼び出しがアプリケーションからクライアントの検証とクォート処理を経て TCP で MygramDB サーバーに届き、応答がデコードされて戻る流れと、MySQL が binlog レプリケーションでサーバーを更新する関係を示した図です。" width="960">
+<img src="docs/images/request-path-ja.svg" alt="検索の呼び出しがアプリケーションからクライアントの検証とクォート処理を経て TCP で MygramDB サーバーに届き、応答がデコードされて戻る流れと、MySQL が binlog レプリケーションでサーバーを更新する関係を示した図です。" width="960">
 
 ## 概要
 
@@ -87,13 +87,13 @@ console.log(pool.metrics());
 await pool.close();
 ```
 
-`circuitBreaker` を設定すると、サーバー到達不能時にプールが `CircuitOpenError` で即座に失敗します。`onEvent` で個別のライフサイクルイベントを受け取れます。単体の `MygramClient` では `autoReconnect` を設定すると、書き込み前に切断済みのソケットを検出したときに 1 回だけ再接続して再送します。サイジングの指針は[コネクションプーリング](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/advanced-usage.md#コネクションプーリング)を、レジリエンス機能は[サーキットブレーカ](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/advanced-usage.md#サーキットブレーカ)を参照してください。
+`circuitBreaker` を設定すると、サーバー到達不能時にプールが `CircuitOpenError` で即座に失敗します。`onEvent` で個別のライフサイクルイベントを受け取れます。単体の `MygramClient` では `autoReconnect` を設定すると、書き込み前に切断済みのソケットを検出したときに 1 回だけ再接続して再送します。サイジングの指針は[コネクションプーリング](docs/ja/advanced-usage.md#コネクションプーリング)を、レジリエンス機能は[サーキットブレーカ](docs/ja/advanced-usage.md#サーキットブレーカ)を参照してください。
 
 ## 検索式
 
 `convertSearchExpression()` は Web 形式の入力をサーバーのブールクエリに変換します。接頭辞のない語と `+` の語は `AND` で結合され、`-` の語は `AND NOT` になり、OR の連なりは括弧で囲まれたまま残ります。
 
-<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/search-expression-ja.svg" alt="Web 形式の入力 golang &quot;machine learning&quot; -php +(tutorial OR guide) を 4 つの項に分け、サーバーへ送るクエリ golang AND &quot;machine learning&quot; AND (tutorial OR guide) AND NOT php に組み立てる過程を示した図です。" width="960">
+<img src="docs/images/search-expression-ja.svg" alt="Web 形式の入力 golang &quot;machine learning&quot; -php +(tutorial OR guide) を 4 つの項に分け、サーバーへ送るクエリ golang AND &quot;machine learning&quot; AND (tutorial OR guide) AND NOT php に組み立てる過程を示した図です。" width="960">
 
 `search()` はクエリをリテラルテキストとして送るため、ブール式は `searchRaw()` で送ります。フィルタ、ソート、あいまい検索、ハイライトも組み合わせる場合は、`search()` に `queryMode: 'boolean'` を渡します。
 
@@ -333,10 +333,10 @@ import type {
 
 ## ドキュメント
 
-- [はじめに](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/getting-started.md) — インストール、設定、エラー処理
-- [検索式](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/search-expression.md) — Web 形式の検索入力のパースと変換
-- [API リファレンス](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/api-reference.md) — すべてのメソッド、オプション、型
-- [高度な使い方](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/advanced-usage.md) — コネクションプーリング、レジリエンス、認証、エラーコード
+- [はじめに](docs/ja/getting-started.md) — インストール、設定、エラー処理
+- [検索式](docs/ja/search-expression.md) — Web 形式の検索入力のパースと変換
+- [API リファレンス](docs/ja/api-reference.md) — すべてのメソッド、オプション、型
+- [高度な使い方](docs/ja/advanced-usage.md) — コネクションプーリング、レジリエンス、認証、エラーコード
 
 ## 開発
 
@@ -350,4 +350,4 @@ yarn lint:fix     # リント・フォーマットを自動修正
 
 ## ライセンス
 
-[MIT](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
+[MIT](LICENSE)

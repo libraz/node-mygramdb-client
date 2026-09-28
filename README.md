@@ -3,13 +3,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/libraz/node-mygramdb-client/ci.yml?branch=main&label=CI)](https://github.com/libraz/node-mygramdb-client/actions)
 [![npm](https://img.shields.io/npm/v/mygramdb-client)](https://www.npmjs.com/package/mygramdb-client)
 [![codecov](https://codecov.io/gh/libraz/node-mygramdb-client/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/node-mygramdb-client)
-[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine with MySQL replication support.
 
-**Server compatibility:** MygramDB 1.6 or later, with the protocol implemented through 1.10.2. A server rejects options it predates, and an older server's `ERROR` frames carry no numeric code; the [API reference](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/api-reference.md) marks each option that needs a newer server.
+**Server compatibility:** MygramDB 1.6 or later, with the protocol implemented through 1.10.2. A server rejects options it predates, and an older server's `ERROR` frames carry no numeric code; the [API reference](docs/en/api-reference.md) marks each option that needs a newer server.
 
-<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/request-path.svg" alt="A search call passing from the application through the client's validation and wire-quoting steps to the MygramDB server over TCP, with the response decoded on the way back and MySQL feeding the server through binlog replication." width="960">
+<img src="docs/images/request-path.svg" alt="A search call passing from the application through the client's validation and wire-quoting steps to the MygramDB server over TCP, with the response decoded on the way back and MySQL feeding the server through binlog replication." width="960">
 
 ## Overview
 
@@ -93,9 +93,9 @@ Add `circuitBreaker` to make the pool fail fast with `CircuitOpenError` when the
 server is unreachable, and `onEvent` for discrete lifecycle events. A standalone
 `MygramClient` can set `autoReconnect` to reconnect-and-resend once on a
 pre-write dead socket. See
-[Connection Pooling](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/advanced-usage.md#connection-pooling)
+[Connection Pooling](docs/en/advanced-usage.md#connection-pooling)
 for sizing guidance and
-[Circuit breaker](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/advanced-usage.md#circuit-breaker)
+[Circuit breaker](docs/en/advanced-usage.md#circuit-breaker)
 for the resilience features.
 
 ## Search Expressions
@@ -104,7 +104,7 @@ for the resilience features.
 unprefixed terms and `+` terms are joined with `AND`, `-` terms become
 `AND NOT`, and an OR chain stays in parentheses.
 
-<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/search-expression.svg" alt="The web-syntax input golang &quot;machine learning&quot; -php +(tutorial OR guide) split into four terms and joined into the server query golang AND &quot;machine learning&quot; AND (tutorial OR guide) AND NOT php." width="960">
+<img src="docs/images/search-expression.svg" alt="The web-syntax input golang &quot;machine learning&quot; -php +(tutorial OR guide) split into four terms and joined into the server query golang AND &quot;machine learning&quot; AND (tutorial OR guide) AND NOT php." width="960">
 
 `search()` sends its query as literal text, so a boolean expression goes through
 `searchRaw()`, or through `search()` with `queryMode: 'boolean'` when it also
@@ -367,10 +367,10 @@ import type {
 
 ## Documentation
 
-- [Getting Started](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/getting-started.md) — install, configuration, and error handling
-- [Search Expressions](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/search-expression.md) — parse and convert web-style search input
-- [API Reference](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/api-reference.md) — every method, option, and type
-- [Advanced Usage](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/advanced-usage.md) — connection pooling, resilience, authentication, and error codes
+- [Getting Started](docs/en/getting-started.md) — install, configuration, and error handling
+- [Search Expressions](docs/en/search-expression.md) — parse and convert web-style search input
+- [API Reference](docs/en/api-reference.md) — every method, option, and type
+- [Advanced Usage](docs/en/advanced-usage.md) — connection pooling, resilience, authentication, and error codes
 
 ## Development
 
@@ -384,4 +384,4 @@ yarn lint:fix     # Auto-fix lint + format issues
 
 ## License
 
-[MIT](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
+[MIT](LICENSE)
