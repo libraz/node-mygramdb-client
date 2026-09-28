@@ -129,10 +129,10 @@ export function normalizeFilters(filters: FilterSpec | undefined): FilterConditi
 }
 
 /**
- * Protocol clause keywords. A search term equal to one of these must be quoted
- * or the server's parser would read it as the start of a clause instead of as
+ * Protocol clause keywords. A term equal to one of these must be quoted or
+ * the server's parser would read it as the start of a clause instead of as
  * text to match. Mirrors the keyword set in the C++ client's
- * `EscapeQueryString`.
+ * `wire_quoting.h::IsReservedKeyword`.
  */
 const QUERY_RESERVED_WORDS: ReadonlySet<string> = new Set([
   'AND',
@@ -149,45 +149,32 @@ const QUERY_RESERVED_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Which inputs force a token to be quoted, beyond whitespace, `"` and `'`,
- * which always do.
+ * Non-ASCII whitespace code points the server's tokenizer splits on outside
+ * quotes, beyond ASCII space/tab/CR/LF: U+00A0, U+1680, U+2000-U+200B,
+ * U+2028, U+2029, U+202F, U+205F, U+3000. Mirrors `wire_quoting.h::IsUnicodeWhitespace`.
  */
-interface TokenQuotingRules {
-  /** `(` and `)` force quoting, so grouping characters are matched literally */
-  parentheses: boolean;
-  /** A standalone protocol keyword forces quoting */
-  reservedWords: boolean;
-}
+const UNICODE_WHITESPACE = /[\u00A0\u1680\u2000-\u200B\u2028\u2029\u202F\u205F\u3000]/;
 
 /**
- * Wrap a value in double quotes when it would otherwise split into multiple
- * protocol tokens, escaping the characters that are special inside a quoted
- * token.
+ * Check whether `value` must be quoted to survive the wire tokenizer intact:
+ * empty, a reserved clause keyword (case-insensitive), or containing
+ * ASCII/Unicode whitespace, a control character, a quote, a backslash or a
+ * parenthesis. Mirrors the C++ client's `wire_quoting.h::NeedsWireQuoting`,
+ * the single decision every wire-bound string in that client shares.
  *
- * This mirrors the C++ client's `EscapeQueryString` /
- * `QuoteCommandArgumentIfNeeded`: a value is quoted when it is empty or
- * contains whitespace or a quote character. Inside the quotes, `"` and `\`
- * are backslash-escaped and any remaining control characters (code < 0x20)
- * are dropped. Values that need no quoting are returned verbatim so simple
- * single-token queries stay byte-identical on the wire.
- *
- * `rules` selects which upstream helper is mirrored: query strings follow
- * `EscapeQueryString` (a standalone protocol keyword, a parenthesis or a
- * backslash all force quoting so the text is matched literally), while command
- * arguments follow `QuoteCommandArgumentIfNeeded` (only a backslash does).
- *
- * @param {string} value - Value to quote (already control-char validated)
- * @param {TokenQuotingRules} rules - Which characters beyond whitespace/quotes force quoting
- * @returns {string} Wire-safe single token
+ * @param {string} value - Value to test
+ * @returns {boolean} True when {@link quoteWireToken} would wrap it
  */
-function quoteTokenIfNeeded(value: string, rules: TokenQuotingRules): string {
+export function needsWireQuoting(value: string): boolean {
   if (value === '') {
-    return '""';
+    return true;
   }
-
-  let needsQuotes = rules.reservedWords && QUERY_RESERVED_WORDS.has(value.toUpperCase());
-  for (let i = 0; i < value.length && !needsQuotes; i += 1) {
+  if (QUERY_RESERVED_WORDS.has(value.toUpperCase())) {
+    return true;
+  }
+  for (let i = 0; i < value.length; i += 1) {
     const char = value[i];
+    const code = char.charCodeAt(0);
     if (
       char === ' ' ||
       char === '\t' ||
@@ -196,27 +183,61 @@ function quoteTokenIfNeeded(value: string, rules: TokenQuotingRules): string {
       char === '"' ||
       char === "'" ||
       char === '\\' ||
-      (rules.parentheses && (char === '(' || char === ')'))
+      char === '(' ||
+      char === ')' ||
+      code <= 0x1f ||
+      code === 0x7f ||
+      UNICODE_WHITESPACE.test(char)
     ) {
-      needsQuotes = true;
+      return true;
     }
   }
+  return false;
+}
 
-  if (!needsQuotes) {
+/**
+ * Wrap a value in double quotes when {@link needsWireQuoting} says the wire
+ * tokenizer would otherwise split it into multiple protocol tokens or
+ * misread it as a clause keyword, escaping the characters that are special
+ * inside a quoted token. Values that need no quoting are returned verbatim
+ * so a simple single-token query stays byte-identical on the wire.
+ *
+ * This is the one quoting decision every wire-bound string in this client
+ * shares -- search terms, filter values, AND/NOT terms, highlight tags,
+ * primary keys and command arguments -- mirroring the C++ client's
+ * `wire_quoting.h::QuoteWireToken`, which every one of its escaping
+ * functions (`EscapeQueryString`, `QuoteCommandArgumentIfNeeded`,
+ * `EscapeProtocolToken`) now delegates to.
+ *
+ * @param {string} value - Value to quote (already control-char validated by
+ *   the caller; a stray control byte is still escaped as `\xHH` here as a
+ *   second line of defense)
+ * @returns {string} Wire-safe single token
+ */
+export function quoteWireToken(value: string): string {
+  if (!needsWireQuoting(value)) {
     return value;
   }
 
   let result = '"';
   for (let i = 0; i < value.length; i += 1) {
     const char = value[i];
-    if (char.charCodeAt(0) < 0x20) {
-      // Drop control characters to prevent command injection.
-      continue;
+    const code = char.charCodeAt(0);
+    if (char === '\\') {
+      result += '\\\\';
+    } else if (char === '"') {
+      result += '\\"';
+    } else if (char === '\r') {
+      result += '\\r';
+    } else if (char === '\n') {
+      result += '\\n';
+    } else if (char === '\t') {
+      result += '\\t';
+    } else if (code <= 0x1f || code === 0x7f) {
+      result += `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
+    } else {
+      result += char;
     }
-    if (char === '"' || char === '\\') {
-      result += '\\';
-    }
-    result += char;
   }
   result += '"';
   return result;
@@ -240,20 +261,22 @@ function quoteTokenIfNeeded(value: string, rules: TokenQuotingRules): string {
  * @throws {InputValidationError} When the value contains control characters
  */
 export function escapeQueryString(value: string, fieldName: string): string {
-  if (value === '') {
-    return '""';
+  if (value !== '') {
+    ensureSafeCommandValue(value, fieldName);
   }
-  ensureSafeCommandValue(value, fieldName);
-  return quoteTokenIfNeeded(value, { parentheses: true, reservedWords: true });
+  return quoteWireToken(value);
 }
 
 /**
- * Quote a free-form command argument (e.g. a `SET` value or `SHOW VARIABLES
- * LIKE` pattern) when it contains whitespace or quote characters. Mirrors the
- * C++ client's `QuoteCommandArgumentIfNeeded`.
+ * Quote a free-form command argument (e.g. a `SET` value, an `AUTH` token, a
+ * `SHOW VARIABLES LIKE` pattern or a `DUMP` filepath). Mirrors the C++
+ * client's `QuoteCommandArgumentIfNeeded`, which -- like `EscapeQueryString`
+ * -- now delegates to the same shared `QuoteWireToken`, so this is
+ * identical to {@link escapeQueryString} beyond the field name used in error
+ * messages; the two names stay separate to match the distinct wire
+ * positions their callers write.
  *
- * Unlike {@link escapeQueryString}, an empty value is allowed and surfaced as
- * the explicit empty token `""`.
+ * An empty value is allowed and surfaced as the explicit empty token `""`.
  *
  * @param {string} value - Argument value
  * @param {string} fieldName - Field name for clearer error messages
@@ -264,7 +287,7 @@ export function quoteCommandArgument(value: string, fieldName: string): string {
   if (value !== '') {
     ensureSafeCommandValue(value, fieldName);
   }
-  return quoteTokenIfNeeded(value, { parentheses: false, reservedWords: false });
+  return quoteWireToken(value);
 }
 
 /**

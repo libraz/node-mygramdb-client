@@ -174,7 +174,10 @@ export function buildSearchCommand(
 
 /**
  * Append the HIGHLIGHT clause (and its TAG / SNIPPET_LEN / MAX_FRAGMENTS
- * sub-options) when highlight options are present.
+ * sub-options) when highlight options are present. Tag text goes through
+ * {@link escapeQueryString} like every other wire-bound value, so a tag
+ * equal to a protocol keyword or containing whitespace, a quote or a
+ * parenthesis still reaches the server as the literal bytes it was given.
  *
  * @param {string[]} parts - Command token list to append to
  * @param {SearchOptions['highlight']} highlight - Highlight options (no-op when undefined)
@@ -186,7 +189,11 @@ function appendHighlightClause(parts: string[], highlight: SearchOptions['highli
   const openTag = highlight.openTag ?? '';
   const closeTag = highlight.closeTag ?? '';
   if (openTag !== '' && closeTag !== '') {
-    parts.push('TAG', openTag, closeTag);
+    parts.push(
+      'TAG',
+      escapeQueryString(openTag, 'highlight.openTag'),
+      escapeQueryString(closeTag, 'highlight.closeTag')
+    );
   }
   if (highlight.snippetLen && highlight.snippetLen > 0) {
     parts.push('SNIPPET_LEN', `${highlight.snippetLen}`);
@@ -346,14 +353,23 @@ export function buildAuthCommand(token: string): string {
 /**
  * Build a `GET <table> <primaryKey>` command line.
  *
+ * The table name is an identifier (validated, sent unquoted); the primary
+ * key is data and goes through {@link escapeQueryString} like every other
+ * wire-bound value, so a key returned by `SEARCH` -- which may contain a
+ * space or collide with a protocol keyword -- can always be sent back to
+ * `GET` unchanged.
+ *
  * @param {string} table - Table name
  * @param {string} primaryKey - Document primary key
  * @returns {string} Wire command (no trailing CRLF)
+ * @throws {InputValidationError} When the primary key is empty
  */
 export function buildGetCommand(table: string, primaryKey: string): string {
   const safeTable = ensureSafeIdentifier(table, 'table');
-  const safePrimaryKey = ensureSafeIdentifier(primaryKey, 'primaryKey');
-  return `GET ${safeTable} ${safePrimaryKey}`;
+  if (primaryKey === '') {
+    throw new InputValidationError('Input for primaryKey must not be empty');
+  }
+  return `GET ${safeTable} ${escapeQueryString(primaryKey, 'primaryKey')}`;
 }
 
 /**

@@ -36,6 +36,7 @@ export interface SearchExpression {
 
 // ESM-compatible require for loading native .node bindings
 import { createRequire } from 'node:module';
+import { quoteWireToken } from './command-utils.js';
 
 // createRequire accepts either an absolute path or a file URL string, so the
 // CJS bundle can base it on __filename and the ESM bundle on import.meta.url.
@@ -135,7 +136,10 @@ class Tokenizer {
     const start = this.position;
     let value = '';
 
-    while (this.position < this.input.length && !/[\s+\-()"]/.test(this.input[this.position])) {
+    // '+' and '-' are unary operators only when tokenize()'s dispatch sees
+    // them at a token boundary. Once a word has started they are ordinary
+    // text, as in "COVID-19", "e-mail", and "C++".
+    while (this.position < this.input.length && !/[\s()"]/.test(this.input[this.position])) {
       value += this.input[this.position];
       this.position += 1;
     }
@@ -173,51 +177,74 @@ export function parseSearchExpression(expression: string): SearchExpression {
 
   let index = 0;
   const peek = (offset = 0): Token => tokens[Math.min(index + offset, tokens.length - 1)];
-  const quoted = (token: Token): string => (token.type === TokenType.QUOTED ? `"${token.value}"` : token.value);
+  // A term destined for requiredTerms/excludedTerms is stored as plain text
+  // regardless of whether it was quoted -- toQueryString/simplifySearchExpression
+  // re-apply wire quoting exactly once, at whichever destination the term is
+  // serialized onto. A term destined for rawExpression (an OR/grouped
+  // sub-expression, already formatted AST-syntax text) needs that quoting
+  // applied here instead, so a plain word colliding with a reserved keyword
+  // (e.g. "order") is quoted before it can reach the AST parser as a bare
+  // operator.
+  const wireTerm = (token: Token): string => quoteWireToken(token.value);
   const appendRaw = (fragment: string): void => {
     result.rawExpression = result.rawExpression === '' ? fragment : `${result.rawExpression} ${fragment}`;
   };
 
   /**
    * Consume a balanced parenthesized group and render it back as a query
-   * sub-expression. `+` and `-` inside the group are kept verbatim, matching
-   * the reference implementation.
+   * sub-expression. Adjacent terms are AND'ed by adjacency already, so `+`
+   * carries no operator meaning inside a group and is dropped; a bare `-`
+   * has no keyword the AST parser recognizes (only the literal word NOT
+   * does), so it is deferred and emitted as "NOT " before the term it
+   * prefixes.
    */
   const captureParenExpression = (): string => {
     let depth = 0;
     let out = '';
+    // Tracks the last *content* token (word/quoted/paren/OR) so the spacing
+    // decision below is unaffected by a +/- prefix in between -- otherwise
+    // "tutorial -video" would see previous===MINUS and skip the space it
+    // needs before the "NOT" it is about to emit.
     let previous: TokenType = TokenType.EOF;
+    let pendingNot = false;
     do {
       const token = peek();
       switch (token.type) {
         case TokenType.LPAREN:
           depth += 1;
           out += '(';
+          previous = token.type;
           break;
         case TokenType.RPAREN:
           depth -= 1;
           out += ')';
+          previous = token.type;
           break;
         case TokenType.WORD:
         case TokenType.QUOTED:
           if (previous === TokenType.WORD || previous === TokenType.QUOTED || previous === TokenType.RPAREN) {
             out += ' ';
           }
-          out += quoted(token);
+          if (pendingNot) {
+            out += 'NOT ';
+            pendingNot = false;
+          }
+          out += wireTerm(token);
+          previous = token.type;
           break;
         case TokenType.OR:
           out += ' OR ';
+          previous = token.type;
           break;
         case TokenType.PLUS:
-          out += '+';
+          // No operator meaning inside a group; previous is left unchanged.
           break;
         case TokenType.MINUS:
-          out += '-';
+          pendingNot = true;
           break;
         default:
           throw new Error(`Unbalanced parentheses at position ${token.position}`);
       }
-      previous = token.type;
       if (depth > 0) index += 1;
     } while (depth > 0);
     index += 1; // Skip the closing paren
@@ -226,14 +253,14 @@ export function parseSearchExpression(expression: string): SearchExpression {
 
   /** Consume a term and every `OR <term>` that follows it. */
   const captureOrExpression = (): string => {
-    let out = quoted(peek());
+    let out = wireTerm(peek());
     index += 1;
     while (peek().type === TokenType.OR) {
       out += ' OR ';
       index += 1;
       const token = peek();
       if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
-        out += quoted(token);
+        out += wireTerm(token);
         index += 1;
       } else if (token.type === TokenType.LPAREN) {
         out += captureParenExpression();
@@ -252,7 +279,7 @@ export function parseSearchExpression(expression: string): SearchExpression {
     }
     if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
       index += 1;
-      return quoted(token);
+      return token.value;
     }
     throw new Error(`Expected term after '${prefix}' at position ${token.position}`);
   };
@@ -278,7 +305,7 @@ export function parseSearchExpression(expression: string): SearchExpression {
         if (peek(1).type === TokenType.OR) {
           appendRaw(captureOrExpression());
         } else {
-          result.requiredTerms.push(quoted(token));
+          result.requiredTerms.push(token.value);
           index += 1;
         }
         break;
@@ -296,6 +323,17 @@ export function parseSearchExpression(expression: string): SearchExpression {
 }
 
 /**
+ * Check whether a required/excluded term is a parenthesized sub-expression
+ * (a group captured after a unary `+`/`-`), already formatted AST-syntax
+ * text rather than a plain term still needing {@link quoteWireToken}.
+ * Detected structurally, never by scanning for an "OR" substring inside a
+ * token, which would misclassify ordinary words such as ORDER and ORANGE.
+ */
+function isParenthesizedSubexpression(term: string): boolean {
+  return term.length >= 2 && term.startsWith('(') && term.endsWith(')');
+}
+
+/**
  * Check if expression has OR operators or grouping
  *
  * @param {SearchExpression} expr - Parsed search expression
@@ -305,11 +343,7 @@ export function hasComplexExpression(expr: SearchExpression): boolean {
   if (expr.rawExpression.length > 0) {
     return true;
   }
-  // A parenthesized group after a unary +/- is retained as one term. Detect
-  // that structural form rather than an "OR" substring inside a token, which
-  // would misclassify ordinary words such as ORDER and ORANGE.
-  const isParenthesized = (term: string): boolean => term.length >= 2 && term.startsWith('(') && term.endsWith(')');
-  return expr.requiredTerms.some(isParenthesized) || expr.excludedTerms.some(isParenthesized);
+  return expr.requiredTerms.some(isParenthesizedSubexpression) || expr.excludedTerms.some(isParenthesizedSubexpression);
 }
 
 /**
@@ -320,17 +354,23 @@ export function hasComplexExpression(expr: SearchExpression): boolean {
  * - Excluded terms prefixed with NOT
  * - The raw OR/grouped sub-expression parenthesized and appended
  *
+ * `requiredTerms`/`excludedTerms` mix plain term text with entries that are
+ * already a fully-formatted parenthesized sub-expression (see
+ * {@link isParenthesizedSubexpression}); only the former still needs
+ * {@link quoteWireToken} applied here, mirroring the C++ client's
+ * `ToQueryString`.
+ *
  * @param {SearchExpression} expr - Parsed search expression
  * @returns {string} Query string compatible with QueryASTParser
  */
 export function toQueryString(expr: SearchExpression): string {
-  const parts: string[] = [...expr.requiredTerms];
+  const emitTerm = (term: string): string => (isParenthesizedSubexpression(term) ? term : quoteWireToken(term));
 
   // `optionalTerms` is never populated by the parser and is kept only so an
   // externally built expression object still round-trips. Terms placed there
   // are required, exactly like the parser's own output.
-  parts.push(...expr.optionalTerms);
-  parts.push(...expr.excludedTerms.map((term) => `NOT ${term}`));
+  const parts: string[] = [...expr.requiredTerms, ...expr.optionalTerms].map(emitTerm);
+  parts.push(...expr.excludedTerms.map((term) => `NOT ${emitTerm(term)}`));
 
   if (expr.rawExpression !== '') {
     parts.push(`(${expr.rawExpression})`);
@@ -365,15 +405,18 @@ export function convertSearchExpression(expression: string): string {
  * For clients that don't support QueryAST, this extracts simple term lists.
  *
  * Required terms (`+term`) take priority: the first becomes `mainTerm`, the
- * rest plus any plain implicit-AND terms become `andTerms`. When no required
- * terms are present but the expression contains an OR / parenthesized
- * sub-expression (e.g. `python OR ruby`, `(a OR b)`), the raw expression is
- * surfaced as a single parenthesized `mainTerm` so callers preserve OR
- * semantics instead of silently AND-composing the parts.
+ * rest plus any plain implicit-AND terms become `andTerms`. An expression
+ * containing an OR / parenthesized sub-expression (e.g. `python OR ruby`,
+ * `golang +(a OR b)`) throws instead: `mainTerm`/`andTerms`/`notTerms` are
+ * each re-quoted by every consumer (`client.search`'s `andTerms`/`notTerms`
+ * options), which would wrap an already-formatted `(a OR b)` as one opaque
+ * literal-phrase term instead of parsing it as boolean OR. Use
+ * {@link convertSearchExpression} with `client.searchRaw` instead when the
+ * expression may contain OR/grouping.
  *
  * @param {string} expression - Web-style search expression
  * @returns {{ mainTerm: string, andTerms: string[], notTerms: string[] }} Simplified terms object
- * @throws {Error} If expression is invalid or has no positive terms
+ * @throws {Error} If expression is invalid, has no positive terms, or contains OR/grouping
  */
 export function simplifySearchExpression(expression: string): {
   mainTerm: string;
@@ -398,26 +441,21 @@ function simplifyParsedExpression(expr: SearchExpression): {
   mainTerm: string;
   andTerms: string[];
 } {
-  // Only one of them can become `mainTerm`, so a positive term next to an
-  // OR/grouped sub-expression has no simplified form. Refuse rather than
-  // silently drop one. Excluded terms are fine: they have their own slot.
-  if (expr.rawExpression.length > 0 && expr.requiredTerms.length > 0) {
+  // The simplified API has no way to represent an OR or parenthesized
+  // sub-expression: every consumer of mainTerm/andTerms/notTerms re-applies
+  // wire quoting to each field, which would wrap an already-formatted
+  // "(a OR b)" as one opaque literal-phrase term instead of parsing it as
+  // boolean OR. Refuse rather than silently changing the expression's
+  // meaning.
+  if (hasComplexExpression(expr)) {
     throw new Error('Expression cannot be represented by the simplified client API');
   }
 
-  if (expr.requiredTerms.length > 0) {
-    const allPositive = [...expr.requiredTerms, ...expr.optionalTerms];
+  // hasComplexExpression already ruled out a non-empty rawExpression above,
+  // so any positive term here is plain text in requiredTerms/optionalTerms.
+  const allPositive = [...expr.requiredTerms, ...expr.optionalTerms];
+  if (allPositive.length > 0) {
     return { mainTerm: allPositive[0], andTerms: allPositive.slice(1) };
-  }
-
-  if (expr.rawExpression.length > 0) {
-    const raw = expr.rawExpression;
-    const mainTerm = raw.startsWith('(') && raw.endsWith(')') ? raw : `(${raw})`;
-    return { mainTerm, andTerms: [] };
-  }
-
-  if (expr.optionalTerms.length > 0) {
-    return { mainTerm: expr.optionalTerms[0], andTerms: expr.optionalTerms.slice(1) };
   }
 
   throw new Error('Search expression must have at least one positive term');

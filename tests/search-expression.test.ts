@@ -53,10 +53,13 @@ describe('parseSearchExpression', () => {
 
   it('should parse quoted phrases', () => {
     const expr = parseSearchExpression('"machine learning" tutorial');
-    // Quoted phrases preserve quotes for phrase search semantics
-    expect(expr.requiredTerms).toEqual(['"machine learning"', 'tutorial']);
+    // Stored as plain phrase text, not pre-quoted: toQueryString re-applies
+    // wire quoting exactly once, at whichever destination the term is
+    // serialized onto.
+    expect(expr.requiredTerms).toEqual(['machine learning', 'tutorial']);
     expect(expr.excludedTerms).toEqual([]);
     expect(expr.optionalTerms).toEqual([]);
+    expect(toQueryString(expr)).toBe('"machine learning" AND tutorial');
   });
 
   it('should parse full-width spaces', () => {
@@ -69,6 +72,31 @@ describe('parseSearchExpression', () => {
   it('should detect OR operator as complex expression', () => {
     const expr = parseSearchExpression('python OR ruby');
     expect(expr.rawExpression).toBe('python OR ruby');
+  });
+
+  it('should recognize OR case-insensitively', () => {
+    // The server recognizes the OR operator case-insensitively (both the
+    // clause scanner and the boolean-expression tokenizer upcase before
+    // comparing), so "or"/"Or" must be treated the same as "OR" here too.
+    expect(parseSearchExpression('python or ruby').rawExpression).toBe('python OR ruby');
+    expect(parseSearchExpression('python Or ruby').rawExpression).toBe('python OR ruby');
+    expect(parseSearchExpression('python oR ruby').rawExpression).toBe('python OR ruby');
+  });
+
+  it('should not treat "or" as an operator inside a longer word', () => {
+    expect(parseSearchExpression('order origin').requiredTerms).toEqual(['order', 'origin']);
+  });
+
+  it('should keep a mid-word + or - as ordinary text once a term has started', () => {
+    // '+'/'-' are unary operators only at a token boundary; mid-word they
+    // are ordinary characters, as in "COVID-19", "e-mail" and "C++".
+    const expr = parseSearchExpression('COVID-19 e-mail C++');
+    expect(expr.requiredTerms).toEqual(['COVID-19', 'e-mail', 'C++']);
+  });
+
+  it('should keep an apostrophe as ordinary text', () => {
+    const expr = parseSearchExpression("don't stop");
+    expect(expr.requiredTerms).toEqual(["don't", 'stop']);
   });
 
   it('should keep a group after + as a single required term', () => {
@@ -228,18 +256,20 @@ describe('simplifySearchExpression', () => {
     );
   });
 
-  it('should wrap an OR-only expression as a parenthesized main term', () => {
-    const result = simplifySearchExpression('python OR ruby');
-    expect(result.mainTerm).toBe('(python OR ruby)');
-    expect(result.andTerms).toEqual([]);
-    expect(result.notTerms).toEqual([]);
+  it('should refuse an OR-only expression: it has no simplified form', () => {
+    // mainTerm/andTerms/notTerms are each re-quoted by every consumer, which
+    // would wrap "(python OR ruby)" as one opaque literal-phrase term
+    // instead of parsing it as boolean OR. Use convertSearchExpression with
+    // searchRaw instead.
+    expect(() => simplifySearchExpression('python OR ruby')).toThrow(
+      'Expression cannot be represented by the simplified client API'
+    );
   });
 
-  it('should not double-wrap an already parenthesized OR expression', () => {
-    const result = simplifySearchExpression('(a OR b)');
-    expect(result.mainTerm).toBe('(a OR b)');
-    expect(result.andTerms).toEqual([]);
-    expect(result.notTerms).toEqual([]);
+  it('should refuse an already parenthesized OR expression', () => {
+    expect(() => simplifySearchExpression('(a OR b)')).toThrow(
+      'Expression cannot be represented by the simplified client API'
+    );
   });
 
   it('should give precedence to required terms over OR sub-expressions', () => {
@@ -249,11 +279,10 @@ describe('simplifySearchExpression', () => {
     expect(result.notTerms).toEqual([]);
   });
 
-  it('should preserve excluded terms alongside an OR-only main term', () => {
-    const result = simplifySearchExpression('python OR ruby -old');
-    expect(result.mainTerm).toBe('(python OR ruby)');
-    expect(result.andTerms).toEqual([]);
-    expect(result.notTerms).toEqual(['old']);
+  it('should refuse an OR-only main term combined with excluded terms', () => {
+    expect(() => simplifySearchExpression('python OR ruby -old')).toThrow(
+      'Expression cannot be represented by the simplified client API'
+    );
   });
 
   it('should refuse a term combined with an OR sub-expression', () => {
@@ -281,8 +310,8 @@ describe('parseSearchExpressionNative', () => {
 
   it('should parse quoted phrases using native parser', () => {
     const result = parseSearchExpressionNative('"machine learning" tutorial');
-    // Native parser includes quotes in the term
-    expect(result.mainTerm).toBe('"machine learning"');
+    // Stored as plain phrase text; wire quoting is applied once, downstream.
+    expect(result.mainTerm).toBe('machine learning');
     expect(result.andTerms).toEqual(['tutorial']);
     expect(result.notTerms).toEqual([]);
   });
@@ -292,6 +321,18 @@ describe('parseSearchExpressionNative', () => {
     expect(result.mainTerm).toBe('機械学習');
     expect(result.andTerms).toEqual(['チュートリアル']);
     expect(result.notTerms).toEqual([]);
+  });
+
+  it('should keep a mid-word + or - as ordinary text using native parser', () => {
+    const result = parseSearchExpressionNative('COVID-19 e-mail C++');
+    expect(result.mainTerm).toBe('COVID-19');
+    expect(result.andTerms).toEqual(['e-mail', 'C++']);
+  });
+
+  it('should keep an apostrophe as ordinary text using native parser', () => {
+    const result = parseSearchExpressionNative("don't stop");
+    expect(result.mainTerm).toBe("don't");
+    expect(result.andTerms).toEqual(['stop']);
   });
 
   it('should parse complex expression with required, optional, and excluded terms', () => {
@@ -318,9 +359,17 @@ describe('parseSearchExpressionNative', () => {
   it('should parse mixed terms with quoted phrases', () => {
     const result = parseSearchExpressionNative('+golang "best practices" -deprecated');
     expect(result.mainTerm).toBe('golang');
-    // Native parser includes quotes in the term
-    expect(result.andTerms).toContain('"best practices"');
+    // Stored as plain phrase text; wire quoting is applied once, downstream.
+    expect(result.andTerms).toContain('best practices');
     expect(result.notTerms).toEqual(['deprecated']);
+  });
+
+  it('should recognize a lowercase "or" as the operator using the native parser', () => {
+    // If "or" were read as a plain word instead of the operator, this would
+    // succeed with three required terms instead of refusing as complex.
+    expect(() => parseSearchExpressionNative('golang or rust')).toThrow(
+      'Expression cannot be represented by the simplified client API'
+    );
   });
 
   it('should throw on empty expression', () => {
@@ -333,17 +382,18 @@ describe('parseSearchExpressionNative', () => {
     );
   });
 
-  it('should wrap an OR-only expression as a parenthesized main term', () => {
-    const result = parseSearchExpressionNative('python OR ruby');
-    expect(result.mainTerm).toBe('(python OR ruby)');
-    expect(result.andTerms).toEqual([]);
-    expect(result.notTerms).toEqual([]);
+  it('should refuse an OR-only expression: it has no simplified form', () => {
+    // mainTerm/andTerms/notTerms are each re-quoted downstream, which would
+    // wrap "(python OR ruby)" as one opaque literal-phrase term instead of
+    // parsing it as boolean OR.
+    expect(() => parseSearchExpressionNative('python OR ruby')).toThrow(
+      'Expression cannot be represented by the simplified client API'
+    );
   });
 
-  it('should not double-wrap an already parenthesized OR expression', () => {
-    const result = parseSearchExpressionNative('(a OR b)');
-    expect(result.mainTerm).toBe('(a OR b)');
-    expect(result.andTerms).toEqual([]);
-    expect(result.notTerms).toEqual([]);
+  it('should refuse an already parenthesized OR expression', () => {
+    expect(() => parseSearchExpressionNative('(a OR b)')).toThrow(
+      'Expression cannot be represented by the simplified client API'
+    );
   });
 });

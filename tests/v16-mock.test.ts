@@ -164,7 +164,8 @@ describe('MygramClient v1.6 search clauses', () => {
     expect(command).not.toContain('SNIPPET_LEN');
     expect(command).not.toContain('MAX_FRAGMENTS');
 
-    socket.emit('data', 'OK RESULTS 0\n');
+    // A HIGHLIGHT-requesting SEARCH always ends in a blank line, even with zero rows (spec/tcp-commands.md §9.6).
+    socket.emit('data', 'OK RESULTS 0\n\n');
     await promise;
   });
 
@@ -183,7 +184,8 @@ describe('MygramClient v1.6 search clauses', () => {
     const command = (socket.write as MockInstance).mock.calls[0][0] as string;
     expect(command).toContain('HIGHLIGHT TAG <strong> </strong> SNIPPET_LEN 200 MAX_FRAGMENTS 5');
 
-    socket.emit('data', 'OK RESULTS 0\n');
+    // A HIGHLIGHT-requesting SEARCH always ends in a blank line, even with zero rows (spec/tcp-commands.md §9.6).
+    socket.emit('data', 'OK RESULTS 0\n\n');
     await promise;
   });
 
@@ -211,7 +213,8 @@ describe('MygramClient v1.6 search clauses', () => {
     expect(idxFuzzy).toBeLessThan(idxHl);
     expect(idxHl).toBeLessThan(idxLimit);
 
-    socket.emit('data', 'OK RESULTS 0\n');
+    // A HIGHLIGHT-requesting SEARCH always ends in a blank line, even with zero rows (spec/tcp-commands.md §9.6).
+    socket.emit('data', 'OK RESULTS 0\n\n');
     await promise;
   });
 

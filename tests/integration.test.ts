@@ -13,6 +13,7 @@ import {
   getClientType,
   isNativeAvailable
 } from '../src/client-factory';
+import { escapeQueryString } from '../src/command-utils';
 import { parseCacheStatsResponse } from '../src/response-parser';
 import {
   simplifySearchExpression as jsSimplifySearchExpression,
@@ -51,8 +52,8 @@ describe('Search Expression Parsing', () => {
     it('should parse quoted phrases', () => {
       const expr = simplifySearchExpression('"machine learning" tutorial');
 
-      // Quotes preserved for phrase search semantics
-      expect(expr.mainTerm).toBe('"machine learning"');
+      // Stored as plain phrase text; wire quoting is applied once, downstream.
+      expect(expr.mainTerm).toBe('machine learning');
       expect(expr.andTerms).toEqual(['tutorial']);
     });
 
@@ -115,8 +116,8 @@ describe('Search Expression Parsing', () => {
     it('should parse quoted phrases', () => {
       const result = parseSearchExpression('"exact phrase" other');
 
-      // Quotes preserved for phrase search semantics
-      expect(result.requiredTerms).toContain('"exact phrase"');
+      // Stored as plain phrase text; wire quoting is applied once, downstream.
+      expect(result.requiredTerms).toContain('exact phrase');
       expect(result.requiredTerms).toContain('other');
     });
 
@@ -132,8 +133,8 @@ describe('Search Expression Parsing', () => {
       const result = parseSearchExpression('+golang "web framework" -deprecated');
 
       expect(result.requiredTerms).toContain('golang');
-      // Quotes preserved for phrase search semantics
-      expect(result.requiredTerms).toContain('"web framework"');
+      // Stored as plain phrase text; wire quoting is applied once, downstream.
+      expect(result.requiredTerms).toContain('web framework');
       expect(result.excludedTerms).toContain('deprecated');
     });
   });
@@ -239,13 +240,17 @@ describe('Client Factory', () => {
 /**
  * Helper to build search command from parsed expression
  */
+// mainTerm/andTerms/notTerms are plain text (see search-expression.ts); a
+// real caller quotes each on the way to the wire (command-builder.ts's
+// buildSearchCommand), so this stand-in does the same rather than
+// concatenating unescaped text.
 function buildSearchCommand(table: string, expr: { mainTerm: string; andTerms: string[]; notTerms: string[] }): string {
-  const parts = ['SEARCH', table, expr.mainTerm];
+  const parts = ['SEARCH', table, escapeQueryString(expr.mainTerm, 'mainTerm')];
   for (const term of expr.andTerms) {
-    parts.push('AND', term);
+    parts.push('AND', escapeQueryString(term, 'andTerms'));
   }
   for (const term of expr.notTerms) {
-    parts.push('NOT', term);
+    parts.push('NOT', escapeQueryString(term, 'notTerms'));
   }
   return parts.join(' ');
 }

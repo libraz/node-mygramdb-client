@@ -325,10 +325,24 @@ describe('identifier whitespace validation', () => {
     expect((socket.write as MockInstance).mock.calls.length).toBe(0);
   });
 
-  it('rejects primary keys with whitespace', async () => {
+  it('quotes primary keys with whitespace instead of rejecting them', async () => {
     const { client, socket } = createConnectedClient();
     await client.connect();
-    await expect(client.get('articles', 'a b')).rejects.toThrow(InputValidationError);
+
+    // The server quotes a primary key containing a space on SEARCH responses
+    // (see response-decoding.test.ts), so GET must accept the same key back
+    // rather than reject it: a key is data, not an identifier.
+    const promise = client.get('articles', 'a b');
+    const command = (socket.write as MockInstance).mock.calls[0][0] as string;
+    expect(command).toBe('GET articles "a b"\r\n');
+    socket.emit('data', 'OK DOC "a b" n=1\r\n');
+    await promise;
+  });
+
+  it('rejects an empty primary key', async () => {
+    const { client, socket } = createConnectedClient();
+    await client.connect();
+    await expect(client.get('articles', '')).rejects.toThrow(InputValidationError);
     expect((socket.write as MockInstance).mock.calls.length).toBe(0);
   });
 

@@ -59,7 +59,7 @@ describe('escaped response values', () => {
     expect(unescapeResponseValue('"back\\\\slash"')).toBe('back\\slash');
     expect(unescapeResponseValue('"say \\"hi\\""')).toBe('say "hi"');
     expect(unescapeResponseValue('"line\\r\\nbreak\\ttab"')).toBe('line\r\nbreak\ttab');
-    expect(unescapeResponseValue('"bell\\x07"')).toBe('bell');
+    expect(unescapeResponseValue('"bell\\x07"')).toBe('bell\x07');
   });
 
   it('decodes an empty quoted value, which the server always quotes', () => {
@@ -111,6 +111,11 @@ describe('GET document decoding', () => {
   it('keeps NULL and boolean column values as the server spells them', () => {
     const doc = parseDocumentResponse('OK DOC 1 a=NULL b=true c=false');
     expect(doc.fields).toEqual({ a: 'NULL', b: 'true', c: 'false' });
+  });
+
+  it('decodes a string value containing Unicode whitespace (U+3000)', () => {
+    const doc = parseDocumentResponse('OK DOC 1 title="機械学習　チュートリアル"');
+    expect(doc.fields).toEqual({ title: '機械学習　チュートリアル' });
   });
 });
 
