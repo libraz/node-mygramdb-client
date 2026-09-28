@@ -5,7 +5,7 @@
 [![codecov](https://codecov.io/gh/libraz/node-mygramdb-client/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/node-mygramdb-client)
 [![License](https://img.shields.io/github/license/libraz/node-mygramdb-client)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
 
-Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine that is **25-200x faster** than MySQL FULLTEXT with MySQL replication support.
+Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — an in-memory full-text search engine that answers queries from memory rather than an on-disk MySQL FULLTEXT index, kept in sync by MySQL replication.
 
 ## Usage
 

@@ -11,11 +11,11 @@ MygramDB v1.10 までに追従（型付きエラーコード、管理コマン�
 
 ## 概要
 
-MygramDB は MySQL FULLTEXT より **25〜200倍高速** な全文検索を提供します。本クライアントは純粋な JavaScript 実装に加え、オプションの C++ ネイティブバインディングもサポートしています。
+MygramDB は、ディスク上の MySQL FULLTEXT インデックスではなくメモリから全文検索に応答します。どれだけ速くなるかはクエリとデータセット次第で、実測値と測定条件は[公開ベンチマーク](https://mygramdb.libraz.net/ja/benchmarks)に載せています。本クライアントは純粋な JavaScript 実装に加え、オプションの C++ ネイティブバインディングもサポートしています。
 
 | | MySQL FULLTEXT | MygramDB |
 |---|---|---|
-| **検索速度** | ベースライン | 25〜200倍高速 |
+| **検索速度** | ベースライン | [実測値](https://mygramdb.libraz.net/ja/benchmarks) |
 | **ストレージ** | ディスク | インメモリ |
 | **レプリケーション** | — | MySQL binlog |
 | **プロトコル** | MySQL | TCP (memcached 形式) |
