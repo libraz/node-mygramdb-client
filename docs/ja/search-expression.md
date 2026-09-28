@@ -92,7 +92,7 @@ const results = await client.search('articles', result.mainTerm, {
 });
 ```
 
-**注意:** 式で引用符が使用される場合、ネイティブパーサーは用語文字列内にそれらを保持します（例: `machine learning` の代わりに `"machine learning"`）。これは、クエリ内の正確なフレーズのセマンティクスを維持するための意図的な動作です。
+**注意:** クォートされたフレーズの用語はプレーンテキストです（`"machine learning"` ではなく `machine learning`）。クォート処理は下流で一度だけ適用されます — `mainTerm`/`andTerms`/`notTerms` を `client.search()` に渡した際にクライアント自身がエスケープするため、二重にエスケープされることなくフレーズがそのままサーバーに届きます。
 
 ### parseSearchExpression()
 
@@ -400,15 +400,16 @@ const results = await client.searchRaw('articles', query);
 const expression = '"hello world" +golang';
 const { mainTerm, andTerms, notTerms } = simplifySearchExpression(expression);
 
-// mainTerm: '"hello world"'  // フレーズ検索のためクォートを保持
+// mainTerm: 'hello world'  // プレーンテキスト。search() が下流で一度だけクォートする
 // andTerms: ['golang']
 // notTerms: []
 
 const results = await client.search('articles', mainTerm, { andTerms, notTerms });
 ```
 
-> **注意**: パースされた用語にはクォートが保持され、フレーズ検索のセマンティクスが維持されます。
-> サーバーは `"hello world"` を完全一致フレーズとして扱います。
+> **注意**: フレーズの用語はプレーンテキストであり、事前にクォートされてはいません。
+> `search()` が `mainTerm`/`andTerms`/`notTerms` をワイヤーに送る際にクォートするため、
+> 二重にエスケープされることなくサーバーは `hello world` を完全一致フレーズとして扱います。
 
 ## 型定義
 

@@ -7,7 +7,7 @@
 
 Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine with MySQL replication support.
 
-Tracks MygramDB through v1.10 — typed error codes, administrative `AUTH`,
+Tracks MygramDB through v1.10.2 — typed error codes, administrative `AUTH`,
 readiness on `INFO`, boolean query mode, comparison filters and facet
 pagination — and stays compatible with servers back to v1.6.
 
@@ -325,6 +325,74 @@ const client = new MygramClient({ timeout: 3000, dumpSaveTimeout: 900_000 });
 const status = await client.getReplicationStatus();
 if ((status.secondsSinceLastApplied ?? 0) > 60) {
   console.warn(`replication is ${status.secondsSinceLastApplied}s behind`, status.lastError);
+}
+```
+
+## MygramDB v1.10.2 Features
+
+A v1.10.2 server corrects several places where a client and the server
+disagreed about what a value meant; this client follows every one of them.
+
+### One quoting rule for every wire-bound string
+
+Search terms, filter values, `AND`/`NOT` terms, highlight tags, primary keys
+and command arguments all go through the same quoting decision. A value is
+quoted when it is empty, a reserved clause keyword (`AND`, `OR`, `NOT`,
+`FILTER`, `SORT`, `LIMIT`, `OFFSET`, `HIGHLIGHT`, `FUZZY`, `FACET`, `ORDER` —
+matched case-insensitively), or contains ASCII or Unicode whitespace
+(including the full-width and no-break space a pasted value or a full-width
+IME can carry), a control character, a quote, a backslash or a parenthesis.
+Callers always pass the raw, unquoted text — the client quotes it as needed:
+
+```typescript
+// A full-width space no longer splits into two unintended terms.
+await client.search('articles', '機械学習　チュートリアル');
+
+// A filter value that happens to equal a reserved keyword still matches literally.
+await client.search('articles', 'q', { filters: { status: 'AND' } });
+```
+
+### Quoted primary keys
+
+`get()` quotes a primary key containing whitespace or a reserved word instead
+of rejecting it — a key is data, not an identifier, so a key returned by
+`search()` can always be passed back to `get()` unchanged. Search results and
+`get()` documents decode a primary key or string value the server quoted the
+same way.
+
+### IPv6 servers
+
+A server reachable only by an IPv6 literal or a hostname that resolves solely
+to an `AAAA` record now connects; the client tries every address the
+hostname resolves to.
+
+### Multi-line responses read completely
+
+A `SEARCH`/`COUNT` reply carrying `HIGHLIGHT` rows or a `DEBUG` block, and a
+non-empty `SHOW VARIABLES` table, are now read to their actual end even when
+a chunk boundary happens to land right after the header line — which
+previously looked like a complete response and truncated the rest.
+
+### `simplifySearchExpression()` rejects OR and grouping
+
+`simplifySearchExpression()` and `parseSearchExpressionNative()` now throw on
+an expression containing OR or grouping instead of silently wrapping it in
+parentheses as a single `mainTerm`. That synthesized term was then re-quoted
+by `search()`'s own escaping, turning `(python OR ruby)` into one opaque
+literal phrase instead of a boolean OR. Use `convertSearchExpression()` with
+`searchRaw()` for an expression that may contain OR or grouping:
+
+```typescript
+import { convertSearchExpression, hasComplexExpression, parseSearchExpression } from 'mygramdb-client';
+
+const parsed = parseSearchExpression(userInput);
+let results;
+if (hasComplexExpression(parsed)) {
+  // Boolean expression: send it verbatim, because search() quotes its query as literal text.
+  results = await client.searchRaw('articles', convertSearchExpression(userInput));
+} else {
+  const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
+  results = await client.search('articles', mainTerm, { andTerms, notTerms });
 }
 ```
 

@@ -7,7 +7,7 @@
 
 [MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリ — MySQL レプリケーション対応の高性能インメモリ全文検索エンジン。
 
-MygramDB v1.10 までに追従（型付きエラーコード、管理コマンドの `AUTH`、`INFO` のレディネス、ブールクエリモード、比較フィルタ、ファセットのページネーション）。v1.6 以降のサーバーとの互換性も維持しています。
+MygramDB v1.10.2 までに追従（型付きエラーコード、管理コマンドの `AUTH`、`INFO` のレディネス、ブールクエリモード、比較フィルタ、ファセットのページネーション）。v1.6 以降のサーバーとの互換性も維持しています。
 
 ## 概要
 
@@ -304,6 +304,52 @@ const client = new MygramClient({ timeout: 3000, dumpSaveTimeout: 900_000 });
 const status = await client.getReplicationStatus();
 if ((status.secondsSinceLastApplied ?? 0) > 60) {
   console.warn(`レプリケーションが ${status.secondsSinceLastApplied} 秒遅延しています`, status.lastError);
+}
+```
+
+## MygramDB v1.10.2 の機能
+
+v1.10.2 のサーバーは、クライアントとサーバーで値の意味の解釈が食い違っていた箇所をいくつか修正しました。このクライアントはそのすべてに追従しています。
+
+### ワイヤーに乗るすべての文字列が同じクォート規則に従う
+
+検索語、フィルタ値、`AND`/`NOT` の項、ハイライトタグ、プライマリキー、コマンド引数はすべて同じクォート判定を通ります。値が空、予約済みの句キーワード（`AND`・`OR`・`NOT`・`FILTER`・`SORT`・`LIMIT`・`OFFSET`・`HIGHLIGHT`・`FUZZY`・`FACET`・`ORDER` — 大文字小文字を区別せず照合）、ASCII またはUnicodeの空白（貼り付けた値や全角IMEが含みうる全角スペースやノーブレークスペースを含む）、制御文字、クォート、バックスラッシュ、括弧のいずれかを含む場合にクォートされます。呼び出し側は常に生のクォートなしテキストを渡すだけで、必要に応じてクライアントがクォートします。
+
+```typescript
+// 全角スペースが意図しない2つの項に分割されなくなりました。
+await client.search('articles', '機械学習　チュートリアル');
+
+// 予約キーワードと一致するフィルタ値もリテラルとして一致します。
+await client.search('articles', 'q', { filters: { status: 'AND' } });
+```
+
+### クォートされたプライマリキー
+
+`get()` は空白や予約語を含むプライマリキーを拒否せずにクォートするようになりました — キーは識別子ではなくデータなので、`search()` が返したキーはそのまま `get()` に渡せます。検索結果と `get()` のドキュメントは、サーバーがクォートしたプライマリキーや文字列値を同じ規則でデコードします。
+
+### IPv6 サーバー
+
+IPv6 リテラル、または `AAAA` レコードにのみ解決されるホスト名でしか到達できないサーバーにも接続できるようになりました。クライアントはホスト名が解決するすべてのアドレスを順に試します。
+
+### マルチライン応答を最後まで読み切る
+
+`HIGHLIGHT` の行や `DEBUG` ブロックを伴う `SEARCH`/`COUNT` の応答、および空でない `SHOW VARIABLES` のテーブルは、チャンクの境界がヘッダー行の直後に来た場合でも最後まで読み切られるようになりました。以前はヘッダー行だけで完了した応答に見えてしまい、残りが切り捨てられていました。
+
+### `simplifySearchExpression()` が OR / グルーピングを拒否する
+
+`simplifySearchExpression()` と `parseSearchExpressionNative()` は、OR やグルーピングを含む式を単一の `mainTerm` として括弧で暗黙的に包むのではなく、例外を投げるようになりました。その合成された項はその後 `search()` 自身のエスケープで再クォートされ、`(python OR ruby)` はブールの OR ではなく1つの不透明なリテラルフレーズになってしまっていました。OR やグルーピングを含みうる式には `convertSearchExpression()` と `searchRaw()` を使ってください。
+
+```typescript
+import { convertSearchExpression, hasComplexExpression, parseSearchExpression } from 'mygramdb-client';
+
+const parsed = parseSearchExpression(userInput);
+let results;
+if (hasComplexExpression(parsed)) {
+  // ブール式なのでそのまま送信する。search() は自身のクエリをリテラルテキストとしてクォートしてしまうため。
+  results = await client.searchRaw('articles', convertSearchExpression(userInput));
+} else {
+  const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
+  results = await client.search('articles', mainTerm, { andTerms, notTerms });
 }
 ```
 

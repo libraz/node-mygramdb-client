@@ -327,12 +327,13 @@ async get(table: string, primaryKey: string): Promise<Document>
 
 **パラメータ:**
 - `table` (string) - テーブル名
-- `primaryKey` (string) - ドキュメントのプライマリキー
+- `primaryKey` (string) - ドキュメントのプライマリキー。`table` と異なり識別子ではなくデータとして扱われるため、空白を含むキーや予約語と一致するキーは自動的にクォートされます。`search()` が返したキーはそのまま渡せます。
 
 **戻り値:** Documentに解決されるPromise
 
 **例外:**
 - `ConnectionError` - 接続されていない場合
+- `InputValidationError` - `primaryKey` が空、または制御文字を含む場合
 - `TimeoutError` - リクエストがタイムアウトした場合
 - `ProtocolError` - ドキュメントが見つからない、またはサーバーエラーの場合
 

@@ -340,12 +340,16 @@ Retrieves a document by its primary key.
 
 **Parameters:**
 - `table` (string) - Name of the table
-- `primaryKey` (string) - Primary key of the document
+- `primaryKey` (string) - Primary key of the document. Unlike `table`, it is
+  data rather than an identifier: a key containing whitespace or equal to a
+  reserved word is quoted automatically, so a key returned by `search()` can
+  always be passed back here unchanged.
 
 **Returns:** Promise resolving to Document
 
 **Throws:**
 - `ConnectionError` - If not connected
+- `InputValidationError` - If `primaryKey` is empty or contains a control character
 - `TimeoutError` - If request times out
 - `ProtocolError` - If document not found or server error
 

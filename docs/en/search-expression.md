@@ -92,7 +92,7 @@ const results = await client.search('articles', result.mainTerm, {
 });
 ```
 
-**Note:** When quotes are used in the expression, the native parser preserves them in the term strings (e.g., `"machine learning"` instead of `machine learning`). This is intentional to maintain exact phrase semantics in the query.
+**Note:** A quoted phrase's term is plain text (`machine learning`, not `"machine learning"`). Quoting is applied once, downstream — `client.search()`'s own escaping when you pass `mainTerm`/`andTerms`/`notTerms` to it — so the phrase reaches the server intact without being escaped twice.
 
 ### parseSearchExpression()
 
@@ -402,15 +402,16 @@ const results = await client.searchRaw('articles', query);
 const expression = '"hello world" +golang';
 const { mainTerm, andTerms, notTerms } = simplifySearchExpression(expression);
 
-// mainTerm: '"hello world"'  // Quotes preserved for phrase search
+// mainTerm: 'hello world'  // Plain text; search() quotes it once, downstream
 // andTerms: ['golang']
 // notTerms: []
 
 const results = await client.search('articles', mainTerm, { andTerms, notTerms });
 ```
 
-> **Note**: Quotes are preserved in the parsed terms to maintain phrase search semantics.
-> The server treats `"hello world"` as an exact phrase match.
+> **Note**: A phrase's term is plain text, not pre-quoted. `search()` quotes
+> `mainTerm`/`andTerms`/`notTerms` on the way to the wire, so the server still
+> treats `hello world` as an exact phrase match without escaping it twice.
 
 ## Type Definitions
 

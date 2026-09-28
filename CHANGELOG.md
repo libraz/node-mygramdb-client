@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Tracks MygramDB **v1.10.2**, a corrective release that unifies wire quoting
+across every string reaching the server and fixes several response-framing
+bugs. The e2e docker stack still defaults to the `1.10.0` server image;
+`MYGRAMDB_VERSION` pins it to `1.10.2` once a matching image is published.
+
+### Fixed
+
+- **Every wire-bound string is quoted by one shared rule** (search terms,
+  filter values, `AND`/`NOT` terms, highlight tags, primary keys and command
+  arguments): empty text, a reserved clause keyword, ASCII or Unicode
+  whitespace (including the full-width and no-break space a full-width IME
+  or a pasted value can carry), a quote, a backslash or a parenthesis are all
+  quoted, mirroring the server's own tokenizer and the reference C++ client's
+  `wire_quoting.h`. Previously only ASCII whitespace and quote characters
+  were covered, so a term containing U+3000 or U+00A0 reached the server
+  unquoted and split into extra tokens.
+- **`get()` quotes a primary key containing whitespace or a reserved word**
+  instead of rejecting it. A key is data, not an identifier, so a key
+  returned by `search()` can always be sent back to `get()` unchanged.
+- **A web-style search expression converts to a query with the same
+  meaning.** A literal term equal to a reserved keyword (`golang not`,
+  `filter`, `+not`) is quoted so it reaches the server as text rather than
+  as the operator; a minus sign inside a `+(...)` group now renders as `NOT`
+  rather than a literal hyphen the server's parser does not understand, and
+  a plus sign inside a group is dropped rather than glued onto the next
+  term.
+- **`simplifySearchExpression()` and `parseSearchExpressionNative()` refuse
+  an expression containing OR or grouping** instead of silently wrapping it
+  in parentheses as a single `mainTerm`. That synthesized term was then
+  re-quoted by `search()`'s own escaping, turning `(python OR ruby)` into one
+  opaque literal phrase instead of a boolean OR — use
+  `convertSearchExpression()` with `searchRaw()` for an expression that may
+  contain OR or grouping.
+- **A `SEARCH`/`COUNT` reply with `HIGHLIGHT` rows or a `DEBUG` block is read
+  completely** even when a chunk boundary lands right after the header line,
+  which previously looked like a complete single-line response and truncated
+  the rest. `SHOW VARIABLES`'s bare ASCII table (no `OK`/`+OK` prefix) has the
+  same fix: every border and row line ends in `\r\n` on its own, so the first
+  border line was previously mistaken for the whole response.
+- **The native C++ addon (`native/`) carries the same corrections** — the
+  shared quoting rule, the web-syntax expression fixes, and the response-
+  framing fix in its `sendCommand` transport — plus `Connect()` now resolves
+  and tries every address `getaddrinfo` returns (reaching an IPv6-only host)
+  and no longer raises `SIGPIPE` on a send to a reset connection.
+
 ## [1.5.0] - 2026-08-10
 
 Tracks MygramDB **v1.9.0** and **v1.10.0**. Every addition is backward
