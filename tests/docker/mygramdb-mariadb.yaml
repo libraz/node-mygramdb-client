@@ -1,0 +1,120 @@
+# MygramDB config for the self-contained docker-compose e2e — MariaDB flavor.
+# Mounted into the mygramdb container at /etc/mygramdb/config.yaml and run with
+# `mygramdb -c` (SKIP_CONFIG_GEN=true bypasses the image's env-based generator).
+# Identical to mygramdb.yaml except for the mysql.host below.
+
+mysql:
+  host: "mariadb"           # docker-compose service name
+  port: 3306
+  user: "repl_user"
+  password: "test_password"
+  database: "testdb"
+  use_gtid: true
+  connect_timeout_ms: 5000
+  datetime_timezone: "+00:00"
+
+tables:
+  - name: "articles"
+    primary_key: "id"
+    text_source:
+      column: "content"
+    required_filters:
+      - name: "enabled"
+        type: "tinyint"
+        op: "="
+        value: 1
+        bitmap_index: false
+    filters:
+      - name: "status"
+        type: "int"
+      - name: "category"
+        type: "string"
+    ngram_size: 2
+    kanji_ngram_size: 1
+
+  - name: "products"
+    primary_key: "id"
+    text_source:
+      column: "description"
+    required_filters:
+      - name: "enabled"
+        type: "tinyint"
+        op: "="
+        value: 1
+        bitmap_index: false
+    filters:
+      - name: "status"
+        type: "int"
+      - name: "category"
+        type: "string"
+    ngram_size: 2
+    kanji_ngram_size: 1
+
+build:
+  batch_size: 5000
+  parallelism: 2
+
+replication:
+  enable: true
+  server_id: 99002
+  start_from: "snapshot"
+  # Pairs with start_from: snapshot. Without it the server has no snapshot
+  # position to start from, so it comes up with an empty index and reports
+  # not_ready until a client sends SYNC — the readiness probe would never go
+  # green and the seeded assertions would find nothing.
+  auto_initial_snapshot: true
+
+memory:
+  hard_limit_mb: 256
+  soft_target_mb: 200
+  # Enable text verification so HIGHLIGHT and `_score` (BM25) sorting work.
+  verify_text: "all"
+  normalize:
+    nfkc: true
+    width: "narrow"
+    lower: false
+
+dump:
+  # Use the image's existing, writable working directory (the env-based config
+  # generator is bypassed here, so no dumps subdir is pre-created).
+  dir: "/var/lib/mygramdb"
+  interval_sec: 0
+
+api:
+  tcp:
+    bind: "0.0.0.0"
+    port: 11016
+  # admin_token is deliberately absent: docker-compose.mariadb.yml supplies it
+  # through MYGRAM_API_ADMIN_TOKEN, which takes priority over this file. v1.10
+  # requires one for a non-loopback bind, and older servers ignore the
+  # variable, so the same config works across every image the suite runs
+  # against.
+  http:
+    enable: true
+    bind: "0.0.0.0"
+    port: 8080
+
+network:
+  # v1.10 rejects a universal allow list when the API binds 0.0.0.0, so this names
+  # the private ranges instead. A connection from the host arrives with the source
+  # address of whatever gateway fronts the container — the compose bridge on Linux
+  # (172.16/12), the Docker Desktop VM gateway on macOS (192.168.65.1) — and the
+  # container's own healthcheck probe comes from loopback. This stack is a
+  # throwaway on a developer machine or a CI runner, so allow all three rather
+  # than pin one networking mode.
+  allow_cidrs:
+    - "127.0.0.1/32"
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+
+logging:
+  level: "info"
+  format: "json"
+  file: ""
+
+cache:
+  enabled: true
+
+bm25:
+  enable: true
