@@ -6,21 +6,30 @@
 #include "../include/mygramclient.h"
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+// macOS-specific: Define SO_NOSIGPIPE if not already defined (include order issues)
+#if defined(__APPLE__) && !defined(SO_NOSIGPIPE)
+// Macro required: system constant for setsockopt, cannot use constexpr
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define SO_NOSIGPIPE 0x1022
+#endif
+
 #include <cctype>
-#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
-#include <thread>
+#include <string_view>
 #include <utility>
 
+#include "protocol_detection.h"
 #include "utils/error.h"
 #include "utils/expected.h"
+#include "wire_quoting.h"
 
 using namespace mygram::utils;
 
@@ -35,19 +44,115 @@ constexpr size_t kLoadedPrefixLen = 10;  // Length of "SNAPSHOT: "
 constexpr int kMillisecondsPerSecond = 1000;
 constexpr int kMicrosecondsPerMillisecond = 1000;
 
+// Linux: MSG_NOSIGNAL suppresses SIGPIPE per-call. macOS lacks MSG_NOSIGNAL;
+// SO_NOSIGPIPE is set on the socket instead (see Connect()). Either way, a
+// send() on a peer-reset connection must not raise SIGPIPE and kill the
+// embedding Node process.
+#ifdef MSG_NOSIGNAL
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
+
 /**
- * @brief Parse key=value pairs from string
+ * @brief Parse key=value pairs from a whitespace-tokenised string
+ *
+ * Used for response fragments where the server emits "key=value" tokens
+ * separated by whitespace (e.g. GET document filter fields). The value is
+ * reversibly escaped per spec/tcp-commands.md §11.1 when it needs to be
+ * (empty, containing whitespace, a quote, a backslash or a control
+ * character), so a quoted value is decoded rather than split on its spaces.
  */
 std::vector<std::pair<std::string, std::string>> ParseKeyValuePairs(const std::string& str) {
   std::vector<std::pair<std::string, std::string>> pairs;
-  std::istringstream iss(str);
-  std::string token;
+  size_t pos = 0;
+  auto skip_spaces = [&]() {
+    while (pos < str.size() && std::isspace(static_cast<unsigned char>(str[pos])) != 0) {
+      ++pos;
+    }
+  };
+  auto hex_value = [](char ch) -> int {
+    if (ch >= '0' && ch <= '9') {
+      return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+      return 10 + (ch - 'a');
+    }
+    if (ch >= 'A' && ch <= 'F') {
+      return 10 + (ch - 'A');
+    }
+    return -1;
+  };
 
-  while (iss >> token) {
-    size_t pos = token.find('=');
-    if (pos != std::string::npos) {
-      std::string key = token.substr(0, pos);
-      std::string value = token.substr(pos + 1);
+  while (pos < str.size()) {
+    skip_spaces();
+    const size_t key_start = pos;
+    while (pos < str.size() && str[pos] != '=' && std::isspace(static_cast<unsigned char>(str[pos])) == 0) {
+      ++pos;
+    }
+    if (pos >= str.size() || str[pos] != '=') {
+      while (pos < str.size() && std::isspace(static_cast<unsigned char>(str[pos])) == 0) {
+        ++pos;
+      }
+      continue;
+    }
+
+    std::string key = str.substr(key_start, pos - key_start);
+    ++pos;  // skip '='
+
+    std::string value;
+    if (pos < str.size() && str[pos] == '"') {
+      ++pos;
+      while (pos < str.size()) {
+        char ch = str[pos++];
+        if (ch == '"') {
+          break;
+        }
+        if (ch == '\\' && pos < str.size()) {
+          char escaped = str[pos++];
+          switch (escaped) {
+            case 'n':
+              value.push_back('\n');
+              break;
+            case 'r':
+              value.push_back('\r');
+              break;
+            case 't':
+              value.push_back('\t');
+              break;
+            case '\\':
+            case '"':
+              value.push_back(escaped);
+              break;
+            case 'x':
+              if (pos + 1 < str.size()) {
+                const int high = hex_value(str[pos]);
+                const int low = hex_value(str[pos + 1]);
+                if (high >= 0 && low >= 0) {
+                  value.push_back(static_cast<char>((high << 4) | low));
+                  pos += 2;
+                  break;
+                }
+              }
+              value.push_back('x');
+              break;
+            default:
+              value.push_back(escaped);
+              break;
+          }
+        } else {
+          value.push_back(ch);
+        }
+      }
+    } else {
+      const size_t value_start = pos;
+      while (pos < str.size() && std::isspace(static_cast<unsigned char>(str[pos])) == 0) {
+        ++pos;
+      }
+      value = str.substr(value_start, pos - value_start);
+    }
+
+    if (!key.empty()) {
       pairs.emplace_back(std::move(key), std::move(value));
     }
   }
@@ -120,32 +225,80 @@ std::optional<std::string> ValidateNoControlCharacters(const std::string& value,
 
 /**
  * @brief Escape special characters in query strings
+ *
+ * Delegates to the shared wire-quoting decision (wire_quoting.h) so a
+ * query term, filter value or AND/NOT term is quoted by the same rule the
+ * server's tokenizer applies: empty text, a reserved clause keyword,
+ * ASCII/Unicode whitespace, a quote/backslash/parenthesis, or a control
+ * character. Also used for primary keys (GET) and command arguments (DUMP
+ * paths), matching the server's SDK, which shares one predicate across
+ * every string reaching the wire.
  */
 std::string EscapeQueryString(const std::string& str) {
-  // Check if string needs quoting (contains spaces or special chars)
-  bool needs_quotes = false;
-  for (char character : str) {
-    if (character == ' ' || character == '\t' || character == '\n' || character == '\r' || character == '"' ||
-        character == '\'') {
-      needs_quotes = true;
+  return detail::QuoteWireToken(str);
+}
+
+constexpr std::string_view kHighlightKeyword = "HIGHLIGHT";
+
+std::string ToAsciiUpper(std::string_view value) {
+  std::string result(value);
+  for (char& ch : result) {
+    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  }
+  return result;
+}
+
+std::string_view TrimAsciiWhitespace(std::string_view value) {
+  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+    value.remove_suffix(1);
+  }
+  return value;
+}
+
+/**
+ * @brief Check whether a command's HIGHLIGHT clause, if any, is real
+ *
+ * HIGHLIGHT is a case-insensitive clause keyword recognized as a bare,
+ * whitespace-delimited token. EscapeQueryString quotes any query/AND/NOT/
+ * FILTER value that collides with it, so an unquoted HIGHLIGHT token in the
+ * command text can only be the real clause. Used to tell IsResponseComplete
+ * a SEARCH/COUNT reply cannot end at its header line.
+ */
+bool CommandRequestsHighlight(std::string_view command) {
+  size_t pos = 0;
+  while (pos < command.size()) {
+    size_t start = command.find_first_not_of(" \t", pos);
+    if (start == std::string_view::npos) {
       break;
     }
-  }
-
-  if (!needs_quotes) {
-    return str;
-  }
-
-  // Use double quotes and escape internal quotes
-  std::string result = "\"";
-  for (char character : str) {
-    if (character == '"' || character == '\\') {
-      result += '\\';
+    size_t end = command.find_first_of(" \t", start);
+    std::string_view token =
+        command.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
+    if (token.size() == kHighlightKeyword.size() && ToAsciiUpper(token) == kHighlightKeyword) {
+      return true;
     }
-    result += character;
+    if (end == std::string_view::npos) {
+      break;
+    }
+    pos = end;
   }
-  result += '"';
-  return result;
+  return false;
+}
+
+/**
+ * @brief Check whether a command is SEARCH or COUNT
+ *
+ * Only these two produce an "OK RESULTS"/"OK COUNT" header that a trailing
+ * DEBUG block can follow; every other command's single-line reply is
+ * genuinely done at its first \r\n regardless of the connection's debug flag.
+ */
+bool IsSearchOrCountCommand(std::string_view command) {
+  const size_t verb_end = command.find_first_of(" \t");
+  const std::string verb = ToAsciiUpper(command.substr(0, verb_end));
+  return verb == "SEARCH" || verb == "COUNT";
 }
 
 }  // namespace
@@ -170,36 +323,55 @@ class MygramClient::Impl {
       return MakeUnexpected(MakeError(ErrorCode::kClientAlreadyConnected, "Already connected"));
     }
 
-    sock_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock_ < 0) {
-      return MakeUnexpected(
-          MakeError(ErrorCode::kClientConnectionFailed, std::string("Failed to create socket: ") + strerror(errno)));
+    // AF_UNSPEC so a host resolving only to an AAAA record, or an IPv6
+    // literal, works the same way the server resolves its own bind address.
+    // getaddrinfo can return more than one candidate (e.g. both A and AAAA
+    // records); each is tried in turn so a dead-but-listed address doesn't
+    // fail the whole connect.
+    struct addrinfo hints {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* addr_result = nullptr;
+    const std::string port_str = std::to_string(config_.port);
+    int gai_err = getaddrinfo(config_.host.c_str(), port_str.c_str(), &hints, &addr_result);
+    if (gai_err != 0 || addr_result == nullptr) {
+      const char* gai_msg = (gai_err != 0) ? gai_strerror(gai_err) : "no addresses returned";
+      return MakeUnexpected(MakeError(
+          ErrorCode::kClientConnectionFailed,
+          "Failed to resolve host '" + config_.host + "': " + (gai_msg != nullptr ? gai_msg : "unknown error")));
     }
 
-    // Set socket timeout
     struct timeval timeout_val = {};
     timeout_val.tv_sec = static_cast<decltype(timeout_val.tv_sec)>(config_.timeout_ms / kMillisecondsPerSecond);
     timeout_val.tv_usec = static_cast<decltype(timeout_val.tv_usec)>((config_.timeout_ms % kMillisecondsPerSecond) *
                                                                      kMicrosecondsPerMillisecond);
-    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &timeout_val, sizeof(timeout_val));
-    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &timeout_val, sizeof(timeout_val));
 
-    struct sockaddr_in server_addr = {};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(config_.port);
+    std::string last_error = "No addresses returned for host '" + config_.host + "'";
+    for (const struct addrinfo* candidate = addr_result; candidate != nullptr; candidate = candidate->ai_next) {
+      int candidate_sock = socket(candidate->ai_family, candidate->ai_socktype, candidate->ai_protocol);
+      if (candidate_sock < 0) {
+        last_error = std::string("Failed to create socket: ") + strerror(errno);
+        continue;
+      }
 
-    if (inet_pton(AF_INET, config_.host.c_str(), &server_addr.sin_addr) <= 0) {
-      close(sock_);
-      sock_ = -1;
-      return MakeUnexpected(MakeError(ErrorCode::kClientConnectionFailed, "Invalid address: " + config_.host));
+      setsockopt(candidate_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout_val, sizeof(timeout_val));
+      setsockopt(candidate_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout_val, sizeof(timeout_val));
+#ifdef SO_NOSIGPIPE
+      constexpr int kEnable = 1;
+      setsockopt(candidate_sock, SOL_SOCKET, SO_NOSIGPIPE, &kEnable, sizeof(kEnable));
+#endif
+
+      if (connect(candidate_sock, candidate->ai_addr, candidate->ai_addrlen) == 0) {
+        sock_ = candidate_sock;
+        break;
+      }
+      last_error = std::string("Connection failed: ") + strerror(errno);
+      close(candidate_sock);
     }
+    freeaddrinfo(addr_result);
 
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - Required for socket API
-    if (connect(sock_, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
-      std::string error_msg = std::string("Connection failed: ") + strerror(errno);
-      close(sock_);
-      sock_ = -1;
-      return MakeUnexpected(MakeError(ErrorCode::kClientConnectionFailed, error_msg));
+    if (sock_ < 0) {
+      return MakeUnexpected(MakeError(ErrorCode::kClientConnectionFailed, last_error));
     }
 
     return {};
@@ -210,6 +382,7 @@ class MygramClient::Impl {
       close(sock_);
       sock_ = -1;
     }
+    debug_mode_ = false;
   }
 
   [[nodiscard]] bool IsConnected() const { return sock_ >= 0; }
@@ -219,15 +392,30 @@ class MygramClient::Impl {
       return MakeUnexpected(MakeError(ErrorCode::kClientNotConnected, "Not connected"));
     }
 
-    // Send command with \r\n terminator
+    // Send command with \r\n terminator. MSG_NOSIGNAL (Linux) / SO_NOSIGPIPE
+    // (macOS, set in Connect()) keep a send() on a peer-reset connection from
+    // raising SIGPIPE and killing the embedding Node process.
     std::string msg = command + "\r\n";
-    ssize_t sent = send(sock_, msg.c_str(), msg.length(), 0);
+    ssize_t sent = send(sock_, msg.c_str(), msg.length(), kSendFlags);
     if (sent < 0) {
       return MakeUnexpected(
           MakeError(ErrorCode::kClientCommandFailed, std::string("Failed to send command: ") + strerror(errno)));
     }
 
-    // Receive response (loop until complete response is received)
+    // A SEARCH/COUNT reply's header line reads identically whether or not a
+    // highlight/debug body follows it, so IsResponseComplete needs to be
+    // told up front when this command's reply cannot end at that header.
+    // Every command reaching this method is a raw string built by the
+    // TypeScript layer (command-builder.ts / literal 'DEBUG ON' etc.), so
+    // the completion decision has to be derived from the command text
+    // itself rather than from a typed request the way the typed Search()/
+    // Count() methods above build it.
+    const bool is_search_or_count = IsSearchOrCountCommand(command);
+    detail::ResponseCompletionState completion_state;
+    completion_state.expect_multiline_tail = is_search_or_count && (debug_mode_ || CommandRequestsHighlight(command));
+    completion_state.expect_debug_marker = is_search_or_count && debug_mode_;
+
+    // Receive response (loop until a complete protocol frame is received).
     std::string response;
     std::vector<char> buffer(config_.recv_buffer_size);
 
@@ -241,22 +429,23 @@ class MygramClient::Impl {
             MakeError(ErrorCode::kClientCommandFailed, std::string("Failed to receive response: ") + strerror(errno)));
       }
 
-      buffer[received] = '\0';
-      response.append(buffer.data(), received);
+      response.append(buffer.data(), static_cast<size_t>(received));
 
-      // Check if response is complete by looking for \r\n terminator
-      // All protocol responses end with \r\n
-      if (response.size() >= 2 && response[response.size() - 2] == '\r' && response[response.size() - 1] == '\n') {
-        // Response is complete
+      if (detail::IsResponseComplete(response, completion_state)) {
         break;
       }
+    }
 
-      // If we received less than buffer size, server has no more data (for now)
-      // But response doesn't end with \r\n yet, so keep reading
-      // This handles the case where server sends data in chunks
-      if (static_cast<size_t>(received) < buffer.size() - 1) {
-        // Small delay to allow more data to arrive
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // A raw "DEBUG ON"/"DEBUG OFF" command (sent directly or via
+    // EnableDebug()/DisableDebug()) that the server accepted: track the flag
+    // so the next SEARCH/COUNT on this connection knows to expect a trailing
+    // debug block.
+    const std::string upper_command = ToAsciiUpper(TrimAsciiWhitespace(command));
+    if (response.compare(0, 5, "ERROR") != 0) {
+      if (upper_command == "DEBUG ON") {
+        debug_mode_ = true;
+      } else if (upper_command == "DEBUG OFF") {
+        debug_mode_ = false;
       }
     }
 
@@ -366,10 +555,18 @@ class MygramClient::Impl {
     SearchResponse resp;
     resp.total_count = total_count;
 
+    // Remaining tokens are reversibly escaped primary keys (spec/tcp-commands.md
+    // §11.1); an unquoted token is decoded to itself, so this is safe for a
+    // key that happens to contain no special bytes too.
+    std::string rest;
+    std::getline(iss, rest);
     std::vector<std::string> tokens;
-    std::string token;
-    while (iss >> token) {
-      tokens.push_back(token);
+    {
+      size_t pos = 0;
+      std::string token;
+      while (detail::ParseWireToken(rest, pos, token)) {
+        tokens.push_back(token);
+      }
     }
 
     // Find DEBUG marker if present
@@ -486,7 +683,7 @@ class MygramClient::Impl {
     }
 
     std::ostringstream cmd;
-    cmd << "GET " << table << " " << primary_key;
+    cmd << "GET " << table << " " << EscapeQueryString(primary_key);
 
     auto result = SendCommand(cmd.str());
     if (!result) {
@@ -503,18 +700,22 @@ class MygramClient::Impl {
       return MakeUnexpected(MakeError(ErrorCode::kClientProtocolError, "Unexpected response format"));
     }
 
-    std::istringstream iss(response);
+    // The primary key is reversibly escaped per spec/tcp-commands.md §11.1
+    // (it may contain whitespace, so it cannot be read with `>>`).
     std::string status;
     std::string doc_str;
     std::string doc_pk;
-    iss >> status >> doc_str >> doc_pk;
+    size_t response_pos = 0;
+    if (!detail::ParseWireToken(response, response_pos, status) ||
+        !detail::ParseWireToken(response, response_pos, doc_str) ||
+        !detail::ParseWireToken(response, response_pos, doc_pk)) {
+      return MakeUnexpected(MakeError(ErrorCode::kClientProtocolError, "Malformed GET response"));
+    }
 
     Document doc(doc_pk);
 
     // Parse remaining key=value pairs
-    std::string rest;
-    std::getline(iss, rest);
-    doc.fields = ParseKeyValuePairs(rest);
+    doc.fields = ParseKeyValuePairs(response.substr(response_pos));
 
     return doc;
   }
@@ -743,6 +944,13 @@ class MygramClient::Impl {
  private:
   ClientConfig config_;
   int sock_{-1};
+  // Mirrors the server's per-connection DEBUG ON/OFF flag so SendCommand
+  // knows a SEARCH/COUNT reply will carry a trailing debug block before any
+  // bytes of it have arrived. Reset on Disconnect() since the flag does not
+  // survive a new server-side connection. Mutable because SendCommand,
+  // which updates it, is logically const (it doesn't touch the socket
+  // handle or config).
+  mutable bool debug_mode_{false};
 };
 
 // MygramClient public interface implementation
