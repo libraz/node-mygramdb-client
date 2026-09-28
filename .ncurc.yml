@@ -1,0 +1,19 @@
+# Packages `ncu -u` must not raise, and why. Drop an entry once its blocker is
+# gone so the next run picks the package up again.
+#
+# A reject only stops ncu from rewriting the range; it does not stop semver
+# resolution. Anything held below a published minor is pinned exactly in the
+# package.json that declares it.
+reject:
+  # typescript: v7 (latest, stable) drops the JS compiler API entirely --
+  # its published lib/ holds only tsc.js, getExePath and version, with no
+  # createProgram/Program/Symbol exports. unplugin-dts (via vite-plugin-dts)
+  # calls ts.createProgram to emit .d.ts files, so `yarn build:ts` fails
+  # without it. Revisit once unplugin-dts moves off the compiler API or
+  # TypeScript restores it.
+  - typescript
+
+# Yarn refuses to install versions younger than npmMinimalAgeGate (24h by
+# default, unset in this repo's .yarnrc.yml), so proposing them here would
+# only produce an uninstallable package.json.
+cooldown: 1d
