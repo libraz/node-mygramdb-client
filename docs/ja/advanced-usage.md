@@ -250,7 +250,7 @@ if (health.healthy) {
 
 ## 管理コマンドの認証
 
-MygramDB v1.10 は管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）を、同一TCP接続上で発行した `AUTH` の背後に置きます。またリスナがループバック以外でトークン未設定の場合、サーバーは起動を拒否します。通常の `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` にトークンは不要です。
+管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）は、同一TCP接続上で発行した `AUTH` の背後にあります（MygramDB 1.10 以降）。またリスナがループバック以外でトークン未設定の場合、サーバーは起動を拒否します。通常の `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` にトークンは不要です。
 
 このゲートが働くのは、サーバー側にトークンが設定されている場合だけです。トークン未設定で起動したサーバー（ループバック専用のリスナなら起動できます）は、どの接続に対しても管理コマンドを実行するため、`adminToken` を設定しないクライアントコードでもそのまま通ります。ローカルで通ったことを、本番でも同じ呼び出しが受け付けられる証拠として扱わないでください。
 
@@ -289,7 +289,7 @@ await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
 
 ## サーバーエラーコードによる分岐
 
-MygramDB v1.10 はすべての `ERROR` フレームに数値コードを前置します。これによりクライアントはメッセージ文字列の照合ではなくコードで分岐できます。サーバー側の拒否は `ServerError`（`ProtocolError` のサブクラスなので、既存の `catch (error instanceof ProtocolError)` は影響を受けません）として届き、`code` と生フレームを保持します。
+すべての `ERROR` フレームには数値コードが前置されます（MygramDB 1.10 以降）。これによりクライアントはメッセージ文字列の照合ではなくコードで分岐できます。サーバー側の拒否は `ServerError`（`ProtocolError` のサブクラスなので、既存の `catch (error instanceof ProtocolError)` は影響を受けません）として届き、`code` と生フレームを保持します。
 
 ```typescript
 import { ErrorCode, ServerError, isAuthRequiredErrorCode } from 'mygramdb-client';
@@ -308,7 +308,7 @@ try {
 }
 ```
 
-v1.10 より前のサーバーではフレームにコードが付かないため、`error.code` は `undefined` となり、分類ヘルパーはすべて `false` を返します。両方をサポートする必要がある場合は、メッセージに依存しないフォールバックを残してください。
+1.10 より前のサーバーではフレームにコードが付かないため、`error.code` は `undefined` となり、分類ヘルパーはすべて `false` を返します。両方をサポートする必要がある場合は、メッセージに依存しないフォールバックを残してください。
 
 ## リトライロジック
 
@@ -332,8 +332,8 @@ async function searchWithRetry(
     } catch (error) {
       lastError = error as Error;
 
-      // Retry on transport failures, and on the transient server-side
-      // conditions a v1.10 server reports by code (loading, not ready, busy).
+      // Retry on transport failures, and on transient server-side conditions
+      // reported by code (loading, not ready, busy; MygramDB 1.10+).
       if (
         error instanceof TimeoutError ||
         error instanceof ConnectionError ||

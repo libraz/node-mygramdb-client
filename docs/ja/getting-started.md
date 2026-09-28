@@ -2,6 +2,8 @@
 
 このガイドでは、Node.js 用の mygramdb-client ライブラリの使い方を説明します。
 
+![検索の呼び出しがアプリケーションからクライアントの検証とクォート処理を経て TCP で MygramDB サーバーに届き、応答がデコードされて戻る流れと、MySQL が binlog レプリケーションでサーバーを更新する関係を示した図です。](../images/request-path-ja.svg)
+
 ## 前提条件
 
 - Node.js 22.0.0 以上
@@ -121,7 +123,7 @@ main();
 | `optimizeTimeout` | number | `600000` | `OPTIMIZE` のデッドライン（ミリ秒） |
 | `recvBufferSize` | number | `65536` | 受信バッファサイズ（バイト） |
 | `maxResponseBytes` | number | `67108864` | 受け入れるレスポンスフレームの上限（バイト） |
-| `adminToken` | string | — | 接続のたびに `AUTH <token>` として送信（MygramDB v1.10+） |
+| `adminToken` | string | — | 接続のたびに `AUTH <token>` として送信（MygramDB 1.10 以降） |
 
 ダンプと `OPTIMIZE` はインデックス全体を走査するため、リクエストタイムアウトとは
 別のデッドラインを持ちます。これらのために `timeout` を延ばすと、通常のクエリの
@@ -140,7 +142,7 @@ const client = new MygramClient({
 
 ### 管理コマンド
 
-MygramDB v1.10 は `DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES` の実行前に、同一接続上での `AUTH` を要求します。`adminToken` を設定しておけば、再接続時も含めて接続のたびにクライアントが認証します。検索にトークンは不要で、サーバー自身がトークン未設定で起動している場合はどのコマンドにも不要です（[管理コマンドの認証](./advanced-usage.md#管理コマンドの認証)を参照）。
+管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）の実行には、同一接続上での `AUTH` が必要です（MygramDB 1.10 以降）。`adminToken` を設定しておけば、再接続時も含めて接続のたびにクライアントが認証します。検索にトークンは不要で、サーバー自身がトークン未設定で起動している場合はどのコマンドにも不要です（[管理コマンドの認証](./advanced-usage.md#管理コマンドの認証)を参照）。
 
 ```typescript
 const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
@@ -162,7 +164,7 @@ try {
   if (error instanceof ConnectionError) {
     console.error('サーバーへの接続に失敗しました:', error.message);
   } else if (error instanceof ServerError) {
-    // MygramDB v1.10 以降は数値コードも返る。それ以前のサーバーでは undefined。
+    // 数値コードは MygramDB 1.10 以降のみ。それ以前のサーバーでは undefined。
     console.error(`サーバーがエラーを返しました (${error.code ?? 'コードなし'}):`, error.message);
   } else if (error instanceof TimeoutError) {
     console.error('リクエストがタイムアウトしました:', error.message);

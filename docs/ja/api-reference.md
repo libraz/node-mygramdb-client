@@ -54,9 +54,9 @@ await client.connect();
 async authenticate(token?: string): Promise<void>
 ```
 
-現在の接続を管理コマンド用に認証します（MygramDB v1.10+）。
+現在の接続を管理コマンド用に認証します（MygramDB 1.10 以降）。
 
-v1.10 のサーバーは `DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES` を、同一TCP接続上で発行した `AUTH` の背後に置きます。またリスナがループバック以外でトークン未設定の場合、サーバーは起動を拒否します。通常の `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` にトークンは不要です。
+管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）は、同一TCP接続上で発行した `AUTH` の背後にあります。またリスナがループバック以外でトークン未設定の場合、サーバーは起動を拒否します。通常の `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` にトークンは不要です。
 
 認証は接続単位なので、再接続のたびにやり直す必要があります。手動で呼ぶより `ClientConfig.adminToken` の設定を推奨します。設定しておけば、`autoReconnect` による再接続や `MygramPool` が開く各接続も含め、接続のたびに自動で認証されます。
 
@@ -127,9 +127,7 @@ async search(
 （`AND`/`OR`/`NOT`/グループ化）式には [`searchRaw()`](#searchraw) を使用します。
 
 **パラメータ:**
-- `table` (string) - 検索対象のテーブル名。MygramDB v1.7+ のマルチデータベース
-  構成では `database.table` 形式（例: `app_db.articles`）を指定します。単一
-  データベースのサーバーでは従来どおり bare な名前も使用できます。
+- `table` (string) - 検索対象のテーブル名。マルチデータベース構成（MygramDB 1.7 以降）では `database.table` 形式（例: `app_db.articles`）を指定します。単一データベースのサーバーでは bare な名前も使用できます。
 - `query` (string) - 検索クエリテキスト
 - `options` (SearchOptions, オプション) - 検索オプション
 
@@ -227,12 +225,7 @@ async searchRaw(
 ): Promise<SearchResponse>
 ```
 
-事前に組み立てたブール式で検索します（MygramDB v1.7+）。式はそのまま（クォート
-せず）送信され、サーバーの AST パーサーが `AND`/`OR`/`NOT`/括弧を解釈します。
-これらのキーワードを含むクォート済みフレーズはリテラルフレーズとして扱われます
-（MygramDB v1.8+）。`search()` の AND/NOT 分解では表現できない OR・グループ化の意味を
-保持したい場合は、[`convertSearchExpression()`](#エクスポートされた関数) と
-組み合わせて使用します。
+事前に組み立てたブール式で検索します（MygramDB 1.7 以降）。式はそのまま（クォートせず）送信され、サーバーの AST パーサーが `AND`/`OR`/`NOT`/括弧を解釈します。これらのキーワードを含むクォート済みフレーズはリテラルフレーズとして扱われます（MygramDB 1.8 以降）。`search()` の AND/NOT 分解では表現できない OR・グループ化の意味を保持したい場合は、[`convertSearchExpression()`](#エクスポートされた関数) と組み合わせて使用します。
 
 **パラメータ:**
 - `table` (string) - テーブル名（bare または `database.table`）
@@ -247,7 +240,7 @@ const raw = convertSearchExpression('python OR (ruby AND rails)');
 const results = await client.searchRaw('articles', raw, { limit: 50 });
 ```
 
-`SearchRawOptions` が扱うのはページネーションとハイライトだけです。式にフィルタ・ソート・あいまい検索を組み合わせる場合は、代わりに `search()` を [`queryMode: 'boolean'`](#querymode) で使ってください（MygramDB v1.9+）。
+`SearchRawOptions` が扱うのはページネーションとハイライトだけです。式にフィルタ・ソート・あいまい検索を組み合わせる場合は、代わりに `search()` を [`queryMode: 'boolean'`](#querymode) で使ってください（MygramDB 1.9 以降）。
 
 ### searchRawWithHighlights()
 
@@ -281,10 +274,7 @@ async facet(
 ): Promise<FacetResponse>
 ```
 
-フィルタ列の distinct な値とそのドキュメント件数を集計します（MygramDB v1.6+）。
-`query` を指定しない場合はテーブル全体を集計し、`query`（および任意の
-`andTerms`/`notTerms`/`filters` による絞り込み）を指定するとマッチしたドキュメント
-に範囲を絞ります。
+フィルタ列の distinct な値とそのドキュメント件数を集計します。`query` を指定しない場合はテーブル全体を集計し、`query`（および任意の `andTerms`/`notTerms`/`filters` による絞り込み）を指定するとマッチしたドキュメントに範囲を絞ります。
 
 **パラメータ:**
 - `table` (string) - テーブル名（bare または `database.table`）
@@ -618,7 +608,9 @@ console.log((await client.dumpStatus()).status);
 console.log(await client.dumpInfo(path));
 ```
 
-## ランタイム変数メソッド（v1.7+）
+## ランタイム変数メソッド
+
+MygramDB 1.7 以降が必要です。
 
 ### setVariable()
 
@@ -646,7 +638,9 @@ async showVariables(likePattern?: string): Promise<string>
 const table = await client.showVariables('logging%');
 ```
 
-## SYNC メソッド（v1.7+）
+## SYNC メソッド
+
+MygramDB 1.7 以降が必要です。
 
 ### sync()
 
@@ -806,7 +800,7 @@ interface ClientConfig {
   maxResponseBytes?: number;  // 受け入れるレスポンスフレームの上限（バイト、デフォルト: 67108864）
   maxQueryLength?: number;    // クエリ式の最大文字数（デフォルト: 128）
   autoReconnect?: boolean;    // 書き込み前に死んだソケットを検出したら1回だけ再接続して再送。純JSトランスポートのみ（デフォルト: false）
-  adminToken?: string;        // 接続のたびに AUTH <token> として送信（MygramDB v1.10+、デフォルト: なし）
+  adminToken?: string;        // 接続のたびに AUTH <token> として送信（MygramDB 1.10+、デフォルト: なし）
 }
 ```
 
@@ -821,7 +815,7 @@ interface ClientConfig {
 
 ```typescript
 interface SearchOptions {
-  queryMode?: QueryMode;         // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB v1.9+）
+  queryMode?: QueryMode;         // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB 1.9+）
   limit?: number;                // 最大結果数（デフォルト: 1000）
   offset?: number;               // ページネーションオフセット（デフォルト: 0）
   andTerms?: string[];           // 追加の必須検索語
@@ -840,7 +834,7 @@ interface SearchOptions {
 type QueryMode = 'literal' | 'boolean';
 ```
 
-サーバーが検索テキストをどう解釈するかを指定します（MygramDB v1.9+）。
+サーバーが検索テキストをどう解釈するかを指定します（MygramDB 1.9 以降）。
 
 - `literal`（デフォルト） - テキストをフレーズとして扱います。`AND`・`OR`・`NOT` などの予約語、グループ化の括弧、バックスラッシュはクォートされ、通常の文字としてマッチします。
 - `boolean` - テキストを式として扱い、サーバーの式パーサに渡します。`AND`/`OR`/`NOT` と括弧は演算子として解釈されます。
@@ -874,7 +868,7 @@ interface FilterCondition {
 type FilterSpec = Record<string, FilterValue> | FilterCondition[];
 ```
 
-FILTER 句は2つの形式を受け付けます。レコード形式はカラム名をキーとし、1カラムにつき1条件までです。範囲指定のように1つのカラムへ2つの条件を課す場合は配列形式を使います。`=` 以外の比較演算子には MygramDB v1.9 以降が必要です。
+FILTER 句は2つの形式を受け付けます。レコード形式はカラム名をキーとし、1カラムにつき1条件までです。範囲指定のように1つのカラムへ2つの条件を課す場合は配列形式を使います。`=` 以外の比較演算子には MygramDB 1.9 以降が必要です。
 
 ```typescript
 // 等価比較（すべてのMygramDBバージョン）
@@ -904,7 +898,7 @@ interface SearchRawOptions {
 
 ```typescript
 interface CountOptions {
-  queryMode?: QueryMode;  // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB v1.9+）
+  queryMode?: QueryMode;  // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB 1.9+）
   andTerms?: string[];    // 追加の必須検索語
   notTerms?: string[];    // 除外する検索語
   filters?: FilterSpec;   // フィルタ条件
@@ -927,12 +921,12 @@ interface HighlightOptions {
 ```typescript
 interface FacetOptions {
   query?: string;         // 集計を絞り込む任意のクエリ
-  queryMode?: QueryMode;  // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB v1.9+）
+  queryMode?: QueryMode;  // サーバーが `query` をどう解釈するか（デフォルト: 'literal'、MygramDB 1.9+）
   andTerms?: string[];    // 追加の必須検索語
   notTerms?: string[];    // 除外する検索語
   filters?: FilterSpec;   // フィルタ条件
   limit?: number;         // 1ページあたりのファセット値の最大数（0 = 無制限）
-  offset?: number;        // ページの前にスキップする distinct 値の数（MygramDB v1.9+）
+  offset?: number;        // ページの前にスキップする distinct 値の数（MygramDB 1.9+）
 }
 ```
 
@@ -941,7 +935,7 @@ interface FacetOptions {
 ```typescript
 interface FacetResponse {
   results: FacetValue[];  // 返却ページ内のファセット値、サーバー定義順
-  totalCount: number;     // OFFSET/LIMIT 適用前の distinct 値の総数（MygramDB v1.10+）
+  totalCount: number;     // OFFSET/LIMIT 適用前の distinct 値の総数（MygramDB 1.10+）
 }
 
 interface FacetValue {
@@ -950,7 +944,7 @@ interface FacetValue {
 }
 ```
 
-ページャに必要なのは distinct 値の総数である `totalCount` です。`results.length` は返却されたページのサイズにすぎません。総数を返さない v1.10 より前のサーバーに対しては、`totalCount` は `results.length` にフォールバックします。
+ページャに必要なのは distinct 値の総数である `totalCount` です。`results.length` は返却されたページのサイズにすぎません。総数を返さない 1.10 より前のサーバーに対しては、`totalCount` は `results.length` にフォールバックします。
 
 ```typescript
 const page = await client.facet('articles', 'category', { limit: 20, offset: 40 });
@@ -972,7 +966,7 @@ interface SearchResponse {
 ```typescript
 interface SearchResult {
   primaryKey: string;  // ドキュメントのプライマリキー
-  snippet?: string;    // ハイライトされたスニペット、ハイライト有効時のみ存在（MygramDB v1.6+）
+  snippet?: string;    // ハイライトされたスニペット、ハイライト有効時のみ存在
 }
 ```
 
@@ -1004,14 +998,14 @@ interface Document {
 
 ```typescript
 class ServerError extends ProtocolError {
-  readonly code: number | undefined;  // 数値コード。v1.10 より前のサーバーでは undefined
+  readonly code: number | undefined;  // 数値コード。1.10 より前のサーバーでは undefined
   readonly rawFrame: string;          // 受信した ERROR フレーム全体
 }
 ```
 
-サーバーがコマンドを拒否したときに送出されます。MygramDB v1.10 以降はすべての `ERROR` フレームに数値コードが前置される（`ERROR 4007 Table not found`）ため、`code` にその値が入り、`message` には人間向けの残り部分だけが入ります。より古いサーバーではフレームにコードがないので、`code` は `undefined` となり `message` がペイロード全体になります。
+サーバーがコマンドを拒否したときに送出されます。MygramDB 1.10 以降ではすべての `ERROR` フレームに数値コードが前置される（`ERROR 4007 Table not found`）ため、`code` にその値が入り、`message` には人間向けの残り部分だけが入ります。より古いサーバーではフレームにコードがないので、`code` は `undefined` となり `message` がペイロード全体になります。
 
-`ServerError` は `ProtocolError` を継承しています。従来のリリース向けに書かれた、サーバー側の拒否をすべて `ProtocolError` として捉えるコードはそのまま動作します。新しいコードではメッセージ文字列ではなく `code` で分岐してください。
+`ServerError` は `ProtocolError` を継承しているため、`catch (error instanceof ProtocolError)` はサーバー側の拒否をすべて受け取れます。メッセージ文字列ではなく `code` で分岐してください。
 
 ```typescript
 import { ErrorCode, ServerError } from 'mygramdb-client';
@@ -1027,7 +1021,7 @@ try {
 
 ### ErrorCode
 
-MygramDB v1.10 以降のサーバーが送出しうる数値エラーコードです。サーバー側の列挙をミラーした const オブジェクトとしてエクスポートされます。コードは範囲ごとに分類されています。一般（0-999）、設定（1000-1999）、MySQL（2000-2999）、クエリ解析（3000-3999）、インデックス/検索（4000-4999）、ストレージ（5000-5999）、ネットワーク/サーバー（6000-6999）、クライアント（7000-7999）、キャッシュ（8000-8999）。
+MygramDB 1.10 以降のサーバーが送出しうる数値エラーコードです。サーバー側の列挙をミラーした const オブジェクトとしてエクスポートされます。コードは範囲ごとに分類されています。一般（0-999）、設定（1000-1999）、MySQL（2000-2999）、クエリ解析（3000-3999）、インデックス/検索（4000-4999）、ストレージ（5000-5999）、ネットワーク/サーバー（6000-6999）、クライアント（7000-7999）、キャッシュ（8000-8999）。
 
 クライアントが分岐に使う頻度が高いものは次のとおりです。
 
@@ -1063,8 +1057,8 @@ interface ServerInfo {
   indexSizeBytes: number;     // インデックスサイズ（バイト）
   docCount: number;           // 総ドキュメント数
   tables: string[];           // テーブル名のリスト
-  dataInitialized?: boolean;  // 設定済み全テーブルの初期ロードが完了したか（MygramDB v1.10+）
-  ready?: boolean;            // クエリを処理できる状態か（MygramDB v1.10+）
+  dataInitialized?: boolean;  // 設定済み全テーブルの初期ロードが完了したか（MygramDB 1.10+）
+  ready?: boolean;            // クエリを処理できる状態か（MygramDB 1.10+）
 }
 ```
 
@@ -1078,14 +1072,14 @@ interface ReplicationStatus {
   gtid: string;                      // 現在のGTID位置
   statusStr: string;                 // 生のステータス文字列
   state?: ReplicationState;          // running | stopped | failed | not_configured
-  processedEvents?: number;          // これまでに処理したイベント数（MygramDB v1.6+）
-  queueSize?: number;                // レプリケーションキューのサイズ、実行中のみ存在（MygramDB v1.6+）
-  crcErrors?: number;                // チェックサム検証に失敗した binlog イベント数（MygramDB v1.10+）
-  schemaIncompatible?: boolean;      // MySQL のスキーマ不一致で停止したか（MygramDB v1.10+）
-  lastErrorCode?: number;            // 直近の失敗のエラーコード（MygramDB v1.10+）
-  lastError?: string;                // lastErrorCode に対応するメッセージ（MygramDB v1.10+）
-  lastAppliedUnixtime?: number;      // 最後にイベントを適用した Unix 時刻（MygramDB v1.10+）
-  secondsSinceLastApplied?: number;  // レプリケーション遅延（秒、MygramDB v1.10+）
+  processedEvents?: number;          // これまでに処理したイベント数
+  queueSize?: number;                // レプリケーションキューのサイズ、実行中のみ存在
+  crcErrors?: number;                // チェックサム検証に失敗した binlog イベント数（MygramDB 1.10+）
+  schemaIncompatible?: boolean;      // MySQL のスキーマ不一致で停止したか（MygramDB 1.10+）
+  lastErrorCode?: number;            // 直近の失敗のエラーコード（MygramDB 1.10+）
+  lastError?: string;                // lastErrorCode に対応するメッセージ（MygramDB 1.10+）
+  lastAppliedUnixtime?: number;      // 最後にイベントを適用した Unix 時刻（MygramDB 1.10+）
+  secondsSinceLastApplied?: number;  // レプリケーション遅延（秒、MygramDB 1.10+）
 }
 ```
 
@@ -1095,11 +1089,7 @@ interface ReplicationStatus {
 監視対象としては `secondsSinceLastApplied` が適切です。レプリケーション位置が
 進んだ地点で記録されるため、単なる疎通ではなく実際の進捗を測れます。
 
-`REPLICATION STATUS` は管理コマンドなので、トークンを設定した v1.10 サーバーから
-これらを読むには `adminToken` が必要です。レディネスは不要です。
-[`ServerInfo`](#serverinfo) の `ready` と `dataInitialized` はゲートされていない
-`INFO` から得られます。レディネスだけでトラフィックを制御する監視にトークンは
-不要ですが、レプリケーション遅延でアラートを出す監視には必要です。
+`REPLICATION STATUS` は管理コマンドなので、トークンを設定した 1.10 サーバーからこれらを読むには `adminToken` が必要です。レディネスは不要です。[`ServerInfo`](#serverinfo) の `ready` と `dataInitialized` はゲートされていない `INFO` から得られます。レディネスだけでトラフィックを制御する監視にトークンは不要ですが、レプリケーション遅延でアラートを出す監視には必要です。
 
 ### DebugInfo
 
@@ -1138,7 +1128,7 @@ interface CacheStats {
   currentMemoryBytes: number;             // キャッシュエントリが保持するメモリ量
   currentMemoryMb: number;                // currentMemoryBytes を MB で表したもの
   invalidationIndexMemoryBytes: number;   // 無効化用の逆引きインデックスのメモリ量
-  invalidationQueueMemoryBytes: number;   // 保留中の無効化が保持するメモリ量（MygramDB v1.10+）
+  invalidationQueueMemoryBytes: number;   // 保留中の無効化が保持するメモリ量（MygramDB 1.10+）
   accountedMemoryBytes: number;           // キャッシュ予算に計上された総メモリ量
   evictions: number;                      // 容量・メモリ制約による退避数
   ttlExpirations: number;                 // TTL 満了で破棄されたエントリ数
@@ -1250,7 +1240,9 @@ class CircuitOpenError extends MygramError {
 
 検索式のパースユーティリティについては、[検索式](./search-expression.md)を参照してください。
 
-### テーブル識別子ヘルパー（v1.7+）
+### テーブル識別子ヘルパー
+
+MygramDB 1.7 以降が必要です。
 
 ```typescript
 qualifyTableIdentity(table: string, database?: string): string

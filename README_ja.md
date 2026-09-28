@@ -3,11 +3,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/libraz/node-mygramdb-client/ci.yml?branch=main&label=CI)](https://github.com/libraz/node-mygramdb-client/actions)
 [![npm](https://img.shields.io/npm/v/mygramdb-client)](https://www.npmjs.com/package/mygramdb-client)
 [![codecov](https://codecov.io/gh/libraz/node-mygramdb-client/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/node-mygramdb-client)
-[![License](https://img.shields.io/github/license/libraz/node-mygramdb-client)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
 
-[MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリ — MySQL レプリケーション対応の高性能インメモリ全文検索エンジン。
+[MygramDB](https://github.com/libraz/mygram-db/) 用の Node.js クライアントライブラリです。MygramDB は MySQL レプリケーションに対応した高性能なインメモリ全文検索エンジンです。
 
-MygramDB v1.10.2 までに追従（型付きエラーコード、管理コマンドの `AUTH`、`INFO` のレディネス、ブールクエリモード、比較フィルタ、ファセットのページネーション）。v1.6 以降のサーバーとの互換性も維持しています。
+**対応サーバー:** MygramDB 1.6 以降に対応し、1.10.2 までのプロトコルを実装しています。サーバーは自身より新しいオプションを拒否し、古いサーバーの `ERROR` には数値コードが付きません。新しいサーバーを必要とするオプションは [API リファレンス](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/api-reference.md)に明記しています。
+
+<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/request-path-ja.svg" alt="検索の呼び出しがアプリケーションからクライアントの検証とクォート処理を経て TCP で MygramDB サーバーに届き、応答がデコードされて戻る流れと、MySQL が binlog レプリケーションでサーバーを更新する関係を示した図です。" width="960">
 
 ## 概要
 
@@ -25,10 +27,12 @@ MygramDB は、ディスク上の MySQL FULLTEXT インデックスではなく�
 - **デュアル実装** — オプションの C++ ネイティブバインディング（JavaScript 自動フォールバック）
 - **検索式パーサー** — Web スタイルの検索構文（+必須、-除外、"フレーズ"、OR、グループ化）
 - **完全なプロトコルサポート** — すべての MygramDB コマンド（SEARCH、COUNT、GET、INFO など）
-- **コネクションプール** — 秒間数百リクエスト向けの組み込み `MygramPool`。バックプレッシャ、ロードシェディング、自己回復する再接続、任意のサーキットブレーカを備える
-- **レジリエンス** — プールのサーキットブレーカ（サーバー到達不能時に fail-fast）と単体クライアントの `autoReconnect`
+- **コネクションプール** — 秒間数百リクエスト向けの組み込み `MygramPool`。バックプレッシャ、ロードシェディング、自己回復する再接続、任意のサーキットブレーカを備えます
+- **レジリエンス** — プールのサーキットブレーカ（サーバー到達不能時に即座に失敗）と単体クライアントの `autoReconnect`
+- **型付きエラー** — `ServerError` がサーバーの数値エラーコードを持つため、リトライ判定がメッセージ文字列に依存しません
+- **IPv4 と IPv6** — IPv6 リテラルや `AAAA` レコードにのみ解決されるホスト名にも接続し、解決されたアドレスを順に試します
 - **型安全性** — 完全な TypeScript 型定義
-- **Promise ベース API** — モダンな async/await インターフェース
+- **Promise ベース API** — async/await のインターフェース
 
 ## インストール
 
@@ -45,7 +49,7 @@ pnpm add mygramdb-client
 ## クイックスタート
 
 ```typescript
-import { createMygramClient, simplifySearchExpression } from 'mygramdb-client';
+import { createMygramClient } from 'mygramdb-client';
 
 const client = createMygramClient({
   host: 'localhost',
@@ -67,9 +71,9 @@ const doc = await client.get('articles', '12345');
 client.disconnect();
 ```
 
-### コネクションプーリング
+## コネクションプーリング
 
-1つのクライアントはすべてのコマンドを1本のソケットで直列化します。高スループット（秒間数百リクエスト）には組み込みの `MygramPool` を使います。バックプレッシャと自己回復する再接続を備え、リクエストをN本の接続へ分散します。
+1 つのクライアントはすべてのコマンドを 1 本のソケットで直列化します。高スループット（秒間数百リクエスト）には組み込みの `MygramPool` を使います。バックプレッシャと自己回復する再接続を備え、リクエストを N 本の接続へ分散します。
 
 ```typescript
 import { MygramPool } from 'mygramdb-client';
@@ -83,36 +87,63 @@ console.log(pool.metrics());
 await pool.close();
 ```
 
-`circuitBreaker` を設定すると、サーバー到達不能時にプールが `CircuitOpenError` で即座に失敗します。`onEvent` で個別のライフサイクルイベントを受け取れます。単体の `MygramClient` では `autoReconnect` を設定すると、書き込み前に死んだソケットを検出したときに1回だけ再接続して再送します。サイジングの指針は[コネクションプーリング](docs/ja/advanced-usage.md#コネクションプーリング)を、レジリエンス機能は[サーキットブレーカ](docs/ja/advanced-usage.md#サーキットブレーカ)を参照してください。
+`circuitBreaker` を設定すると、サーバー到達不能時にプールが `CircuitOpenError` で即座に失敗します。`onEvent` で個別のライフサイクルイベントを受け取れます。単体の `MygramClient` では `autoReconnect` を設定すると、書き込み前に切断済みのソケットを検出したときに 1 回だけ再接続して再送します。サイジングの指針は[コネクションプーリング](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/advanced-usage.md#コネクションプーリング)を、レジリエンス機能は[サーキットブレーカ](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/advanced-usage.md#サーキットブレーカ)を参照してください。
 
 ## 検索式
 
-Web スタイルの検索クエリを構造化された検索パラメータにパースします:
+`convertSearchExpression()` は Web 形式の入力をサーバーのブールクエリに変換します。接頭辞のない語と `+` の語は `AND` で結合され、`-` の語は `AND NOT` になり、OR の連なりは括弧で囲まれたまま残ります。
+
+<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/search-expression-ja.svg" alt="Web 形式の入力 golang &quot;machine learning&quot; -php +(tutorial OR guide) を 4 つの項に分け、サーバーへ送るクエリ golang AND &quot;machine learning&quot; AND (tutorial OR guide) AND NOT php に組み立てる過程を示した図です。" width="960">
+
+`search()` はクエリをリテラルテキストとして送るため、ブール式は `searchRaw()` で送ります。フィルタ、ソート、あいまい検索、ハイライトも組み合わせる場合は、`search()` に `queryMode: 'boolean'` を渡します。
 
 ```typescript
-import { simplifySearchExpression } from 'mygramdb-client';
+import { convertSearchExpression } from 'mygramdb-client';
 
-// スペース = AND、- = NOT、"" = フレーズ、OR = OR、() = グループ化
-const expr = simplifySearchExpression('hello world -spam');
-// → { mainTerm: 'hello', andTerms: ['world'], notTerms: ['spam'] }
+const raw = convertSearchExpression('golang "machine learning" -php +(tutorial OR guide)');
+// → 'golang AND "machine learning" AND (tutorial OR guide) AND NOT php'
 
-const results = await client.search('articles', expr.mainTerm, {
-  andTerms: expr.andTerms,
-  notTerms: expr.notTerms,
-  limit: 100,
-  offset: 50,
-  filters: { status: 'published', lang: 'ja' },
-  sortColumn: 'created_at',
-  sortDesc: true
+const res = await client.searchRaw('articles', raw, { limit: 50 });
+
+await client.search('articles', raw, {
+  queryMode: 'boolean',
+  filters: { status: 'published' },
+  sortColumn: '_score'
 });
 ```
 
-## MygramDB v1.6 の機能
+既定の `literal` モードでは、通常のユーザー入力はフレーズとしてマッチします。OR やグループ化を含まない入力は、`simplifySearchExpression()` で主項と `AND`/`NOT` の項に分けて `search()` に渡せます。この関数は OR やグループ化を含む式では例外を投げるため、どちらかを含みうる入力は先に `hasComplexExpression()` で判定します。
+
+```typescript
+import {
+  convertSearchExpression,
+  hasComplexExpression,
+  parseSearchExpression,
+  simplifySearchExpression
+} from 'mygramdb-client';
+
+const parsed = parseSearchExpression(userInput);
+let results;
+if (hasComplexExpression(parsed)) {
+  results = await client.searchRaw('articles', convertSearchExpression(userInput));
+} else {
+  const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
+  results = await client.search('articles', mainTerm, {
+    andTerms,
+    notTerms,
+    limit: 100,
+    filters: { status: 'published', lang: 'ja' },
+    sortColumn: 'created_at',
+    sortDesc: true
+  });
+}
+```
+
+## 検索機能
 
 ### BM25 関連度スコアリング
 
-特殊なソートカラム名 `_score` を指定すると関連度順でソートできます
-（サーバー側で `verify_text: ascii|all` の設定が必要）:
+特殊なソートカラム名 `_score` を指定すると関連度順でソートできます（サーバー側で `verify_text: ascii|all` の設定が必要です）。
 
 ```typescript
 const results = await client.search('articles', 'machine learning', {
@@ -152,87 +183,11 @@ for (const r of results.results) {
 }
 ```
 
-`{}` を渡すとサーバーのデフォルト設定（`<em>`/`</em>`、100 コードポイント、
-最大 3 フラグメント）でハイライトされます。
-
-### ファセット
-
-フィルタ列の値と件数を集計します。検索結果の範囲に絞り込むことも可能です:
-
-```typescript
-// テーブル全体での値分布:
-const all = await client.facet('articles', 'status');
-
-// "machine learning" にマッチするドキュメント内のカテゴリ上位:
-const top = await client.facet('articles', 'category', {
-  query: 'machine learning',
-  filters: { status: '1' },
-  limit: 10
-});
-
-for (const v of top.results) {
-  console.log(`${v.value}: ${v.count}`);
-}
-```
-
-## MygramDB v1.7 の機能
-
-### マルチデータベース（修飾テーブル識別子）
-
-v1.7+ のインスタンスは複数のデータベースのテーブルをインデックスできます。
-テーブルは `database.table` 形式で参照します。単一データベースのサーバーでは
-従来どおり bare な名前も使用できます。
-
-```typescript
-await client.search('app_db.articles', 'hello');
-
-import { qualifyTableIdentity, parseTableIdentity } from 'mygramdb-client';
-qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
-parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
-```
-
-### ブール検索
-
-`search()` はクエリを1つの（自動クォートされた）トークンとして送信します。
-ブール（`AND`/`OR`/`NOT`/グループ化）には式を組み立てて `searchRaw()` に渡します:
-
-```typescript
-import { convertSearchExpression } from 'mygramdb-client';
-
-const raw = convertSearchExpression('python OR (ruby AND rails)');
-const res = await client.searchRaw('articles', raw, { limit: 50 });
-```
-
-`searchRaw()` は式をそのまま（クォートせず）送信するため、サーバーのブールパーサーが `AND`/`OR`/`NOT`/グループ化を解釈します。これらのキーワードを含むクォート済みフレーズはリテラルとして扱われます（MygramDB v1.8+）。
-
-### ランタイム変数とオンデマンド SYNC
-
-```typescript
-await client.setVariable('logging.level', 'info');
-console.log(await client.showVariables('logging%'));
-
-await client.sync('app_db.articles');
-console.log(await client.syncStatus());
-await client.syncStop('app_db.articles');
-```
-
-## MygramDB v1.9 の機能
-
-### 型付き句と組み合わせるブールクエリモード
-
-`searchRaw()` は式だけを送ります。式にフィルタ・ソート・あいまい検索・ハイライトを組み合わせたい場合は、`search()` に `queryMode: 'boolean'` を渡します。既定は `literal` のままなので、通常のユーザー入力はこれまでどおりフレーズとしてマッチします。
-
-```typescript
-await client.search('articles', 'alpha AND (xqz OR jkv)', {
-  queryMode: 'boolean',
-  filters: { status: 'published' },
-  sortColumn: '_score'
-});
-```
+`{}` を渡すと、サーバーのデフォルト設定（`<em>`/`</em>`、100 コードポイント、最大 3 フラグメント）でハイライトされます。
 
 ### 比較フィルタ
 
-フィルタは `=`・`!=`・`<>`・`>`・`>=`・`<`・`<=` を受け付けます。1つのカラムに2つの条件が必要な場合は配列形式を使います。
+フィルタは `=`・`!=`・`<>`・`>`・`>=`・`<`・`<=` を受け付けます。1 つのカラムに 2 つの条件が必要な場合は配列形式を使います。
 
 ```typescript
 await client.search('products', 'laptop', {
@@ -243,18 +198,64 @@ await client.search('products', 'laptop', {
 });
 ```
 
-### ファセットのページネーション
+### ファセット
+
+フィルタ列の値ごとの件数を集計します。検索結果の範囲に絞り込むことも、`limit`/`offset` でページ送りすることもできます。
 
 ```typescript
+// "machine learning" にマッチするドキュメント内のカテゴリ上位:
+const top = await client.facet('articles', 'category', {
+  query: 'machine learning',
+  filters: { status: '1' },
+  limit: 10
+});
+
+for (const v of top.results) {
+  console.log(`${v.value}: ${v.count}`);
+}
+
 const page = await client.facet('articles', 'category', { limit: 20, offset: 40 });
 console.log(`${page.totalCount} カテゴリ中 ${page.results.length} 件`);
 ```
 
-## MygramDB v1.10 の機能
+### マルチデータベースのテーブル
+
+サーバーは複数のデータベースのテーブルをインデックスできます。テーブルは `database.table` 形式で参照します。単一データベースのサーバーでは、データベース名を付けないテーブル名も使えます。
+
+```typescript
+await client.search('app_db.articles', 'hello');
+
+import { qualifyTableIdentity, parseTableIdentity } from 'mygramdb-client';
+qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
+parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
+```
+
+## ワイヤー上のクォート
+
+検索語、フィルタ値、`AND`/`NOT` の項、ハイライトタグ、プライマリキー、コマンド引数は、すべて同じクォート判定を通ります。次のいずれかに当てはまる値はクォートされます。
+
+- 空文字列
+- 予約済みの句キーワード（`AND`・`OR`・`NOT`・`FILTER`・`SORT`・`LIMIT`・`OFFSET`・`HIGHLIGHT`・`FUZZY`・`FACET`・`ORDER`。大文字小文字を区別せずに照合します）
+- ASCII または Unicode の空白を含む値（貼り付けた値や全角 IME が含みうる全角スペースやノーブレークスペースも対象です）
+- 制御文字、クォート、バックスラッシュ、括弧を含む値
+
+呼び出し側は常にクォートなしの生のテキストを渡します。
+
+```typescript
+// 全角スペースは 1 つの項の中に残ります。
+await client.search('articles', '機械学習　チュートリアル');
+
+// 予約キーワードと一致するフィルタ値もリテラルとして一致します。
+await client.search('articles', 'q', { filters: { status: 'AND' } });
+```
+
+`get()` は、空白を含むプライマリキーや予約語と一致するプライマリキーをクォートします。そのため、`search()` が返したキーは常にそのまま `get()` に渡せます。検索結果と `get()` のドキュメントは、サーバーがクォートしたプライマリキーや文字列値を同じ規則でデコードします。
+
+## 認証とエラーコード
 
 ### 管理コマンドの認証
 
-v1.10 のサーバーは管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）を `AUTH` の背後に置きます。`adminToken` を設定すれば、再接続やプールの各接続も含め、接続のたびにクライアントが認証します。
+サーバーは管理コマンド（`DUMP *`・`REPLICATION *`・`SYNC *`・`CONFIG *`・`OPTIMIZE`・`DEBUG *`・`CACHE *`・`SET`・`SHOW VARIABLES`）の実行前に `AUTH` を要求します。`adminToken` を設定すると、再接続やプールの各接続も含め、接続のたびにクライアントが認証します。
 
 ```typescript
 const client = new MygramClient({ adminToken: process.env.MYGRAM_ADMIN_TOKEN });
@@ -266,7 +267,7 @@ await client.dumpSave('/var/lib/mygramdb/dump.mgd');
 
 ### 型付きエラーコード
 
-`ERROR` フレームが数値コードを持つようになり、メッセージ文字列を照合せずに失敗を分類できます。サーバー側の拒否は `ProtocolError` のサブクラスである `ServerError` として届きます。
+`ERROR` フレームは数値コードを持つため、メッセージ文字列を照合せずに失敗を分類できます。サーバー側の拒否は、`ProtocolError` のサブクラスである `ServerError` として届きます。
 
 ```typescript
 import { ErrorCode, ServerError, isRetryableErrorCode } from 'mygramdb-client';
@@ -280,7 +281,7 @@ try {
 }
 ```
 
-### INFO のレディネス
+### レディネス
 
 ```typescript
 const info = await client.info();
@@ -289,14 +290,11 @@ if (info.ready === false) {
 }
 ```
 
+## サーバー管理
+
 ### レプリケーション遅延と操作ごとのデッドライン
 
-`getReplicationStatus()` は `secondsSinceLastApplied` を返します。これはレプリ
-ケーション位置が進んだ地点で記録されるため、単なる疎通ではなく実際の進捗を表し
-ます。これは管理コマンドなので、トークンを設定した v1.10 サーバーから取得するには
-`adminToken` が必要です（`INFO` のレディネス項目とは異なります）。ダンプと
-`OPTIMIZE` は専用のデッドラインを持つので、`timeout` は停止したクエリを検知できる
-短さのまま維持できます。
+`getReplicationStatus()` は `secondsSinceLastApplied` を返します。この値はレプリケーション位置が進んだ時点で記録されるため、疎通ではなく実際の進捗を表します。`getReplicationStatus()` は管理コマンドなので、トークンを設定したサーバーから取得するには `adminToken` が必要です（`INFO` のレディネス項目は不要です）。ダンプと `OPTIMIZE` には専用のデッドラインがあるため、`timeout` は停止したクエリを検知できる短さに保てます。
 
 ```typescript
 const client = new MygramClient({ timeout: 3000, dumpSaveTimeout: 900_000 });
@@ -307,55 +305,20 @@ if ((status.secondsSinceLastApplied ?? 0) > 60) {
 }
 ```
 
-## MygramDB v1.10.2 の機能
-
-v1.10.2 のサーバーは、クライアントとサーバーで値の意味の解釈が食い違っていた箇所をいくつか修正しました。このクライアントはそのすべてに追従しています。
-
-### ワイヤーに乗るすべての文字列が同じクォート規則に従う
-
-検索語、フィルタ値、`AND`/`NOT` の項、ハイライトタグ、プライマリキー、コマンド引数はすべて同じクォート判定を通ります。値が空、予約済みの句キーワード（`AND`・`OR`・`NOT`・`FILTER`・`SORT`・`LIMIT`・`OFFSET`・`HIGHLIGHT`・`FUZZY`・`FACET`・`ORDER` — 大文字小文字を区別せず照合）、ASCII またはUnicodeの空白（貼り付けた値や全角IMEが含みうる全角スペースやノーブレークスペースを含む）、制御文字、クォート、バックスラッシュ、括弧のいずれかを含む場合にクォートされます。呼び出し側は常に生のクォートなしテキストを渡すだけで、必要に応じてクライアントがクォートします。
+### ランタイム変数とオンデマンド SYNC
 
 ```typescript
-// 全角スペースが意図しない2つの項に分割されなくなりました。
-await client.search('articles', '機械学習　チュートリアル');
+await client.setVariable('logging.level', 'info');
+console.log(await client.showVariables('logging%'));
 
-// 予約キーワードと一致するフィルタ値もリテラルとして一致します。
-await client.search('articles', 'q', { filters: { status: 'AND' } });
-```
-
-### クォートされたプライマリキー
-
-`get()` は空白や予約語を含むプライマリキーを拒否せずにクォートするようになりました — キーは識別子ではなくデータなので、`search()` が返したキーはそのまま `get()` に渡せます。検索結果と `get()` のドキュメントは、サーバーがクォートしたプライマリキーや文字列値を同じ規則でデコードします。
-
-### IPv6 サーバー
-
-IPv6 リテラル、または `AAAA` レコードにのみ解決されるホスト名でしか到達できないサーバーにも接続できるようになりました。クライアントはホスト名が解決するすべてのアドレスを順に試します。
-
-### マルチライン応答を最後まで読み切る
-
-`HIGHLIGHT` の行や `DEBUG` ブロックを伴う `SEARCH`/`COUNT` の応答、および空でない `SHOW VARIABLES` のテーブルは、チャンクの境界がヘッダー行の直後に来た場合でも最後まで読み切られるようになりました。以前はヘッダー行だけで完了した応答に見えてしまい、残りが切り捨てられていました。
-
-### `simplifySearchExpression()` が OR / グルーピングを拒否する
-
-`simplifySearchExpression()` と `parseSearchExpressionNative()` は、OR やグルーピングを含む式を単一の `mainTerm` として括弧で暗黙的に包むのではなく、例外を投げるようになりました。その合成された項はその後 `search()` 自身のエスケープで再クォートされ、`(python OR ruby)` はブールの OR ではなく1つの不透明なリテラルフレーズになってしまっていました。OR やグルーピングを含みうる式には `convertSearchExpression()` と `searchRaw()` を使ってください。
-
-```typescript
-import { convertSearchExpression, hasComplexExpression, parseSearchExpression } from 'mygramdb-client';
-
-const parsed = parseSearchExpression(userInput);
-let results;
-if (hasComplexExpression(parsed)) {
-  // ブール式なのでそのまま送信する。search() は自身のクエリをリテラルテキストとしてクォートしてしまうため。
-  results = await client.searchRaw('articles', convertSearchExpression(userInput));
-} else {
-  const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
-  results = await client.search('articles', mainTerm, { andTerms, notTerms });
-}
+await client.sync('app_db.articles');
+console.log(await client.syncStatus());
+await client.syncStop('app_db.articles');
 ```
 
 ## TypeScript
 
-完全な型定義を同梱しています:
+完全な型定義を同梱しています。
 
 ```typescript
 import type {
@@ -367,6 +330,13 @@ import type {
   SearchOptions
 } from 'mygramdb-client';
 ```
+
+## ドキュメント
+
+- [はじめに](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/getting-started.md) — インストール、設定、エラー処理
+- [検索式](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/search-expression.md) — Web 形式の検索入力のパースと変換
+- [API リファレンス](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/api-reference.md) — すべてのメソッド、オプション、型
+- [高度な使い方](https://github.com/libraz/node-mygramdb-client/blob/main/docs/ja/advanced-usage.md) — コネクションプーリング、レジリエンス、認証、エラーコード
 
 ## 開発
 
@@ -380,4 +350,4 @@ yarn lint:fix     # リント・フォーマットを自動修正
 
 ## ライセンス
 
-[MIT](LICENSE)
+[MIT](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)

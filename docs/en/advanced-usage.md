@@ -294,11 +294,12 @@ if (health.healthy) {
 
 ## Administrative Authentication
 
-MygramDB v1.10 gates administrative commands — `DUMP *`, `REPLICATION *`,
-`SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and
-`SHOW VARIABLES` — behind an `AUTH` issued on the same TCP connection, and
-refuses to start when its listener is not loopback and no token is configured.
-Ordinary `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` traffic never needs one.
+Administrative commands — `DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`,
+`OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and `SHOW VARIABLES` — sit behind an
+`AUTH` issued on the same TCP connection (MygramDB 1.10 or later), and the
+server refuses to start when its listener is not loopback and no token is
+configured. Ordinary `SEARCH` / `COUNT` / `GET` / `FACET` / `INFO` traffic
+never needs one.
 
 The gate is only active when the server itself has a token configured. A server
 that starts without one — which a loopback-only listener may do — runs the
@@ -350,11 +351,11 @@ await client.authenticate(process.env.MYGRAM_ADMIN_TOKEN);
 
 ## Branching on Server Error Codes
 
-MygramDB v1.10 prefixes every `ERROR` frame with a numeric code, so a client can
-branch on the code instead of matching message text. Server-side rejections
-arrive as a `ServerError` (a subclass of `ProtocolError`, so existing
-`catch (error instanceof ProtocolError)` code is unaffected) carrying `code` and
-the raw frame:
+Every `ERROR` frame is prefixed with a numeric code (MygramDB 1.10 or later),
+so a client can branch on the code instead of matching message text.
+Server-side rejections arrive as a `ServerError` (a subclass of
+`ProtocolError`, so existing `catch (error instanceof ProtocolError)` code is
+unaffected) carrying `code` and the raw frame:
 
 ```typescript
 import { ErrorCode, ServerError, isAuthRequiredErrorCode } from 'mygramdb-client';
@@ -373,7 +374,7 @@ try {
 }
 ```
 
-Against a server older than v1.10 the frame carries no code, so `error.code` is
+Against a server older than 1.10 the frame carries no code, so `error.code` is
 `undefined` and the classification helpers all return `false`. Keep a
 message-independent fallback if you must support both.
 
@@ -399,8 +400,8 @@ async function searchWithRetry(
     } catch (error) {
       lastError = error as Error;
 
-      // Retry on transport failures, and on the transient server-side
-      // conditions a v1.10 server reports by code (loading, not ready, busy).
+      // Retry on transport failures, and on transient server-side conditions
+      // reported by code (loading, not ready, busy; MygramDB 1.10+).
       if (
         error instanceof TimeoutError ||
         error instanceof ConnectionError ||

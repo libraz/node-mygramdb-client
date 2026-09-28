@@ -48,6 +48,13 @@ const exprJS = simplifySearchExpressionJS('hello world');
 - 「deprecated」を含まない
 - 「best practices」というフレーズを含むべき
 
+```typescript
+convertSearchExpression('golang "machine learning" -php +(tutorial OR guide)');
+// 戻り値: 'golang AND "machine learning" AND (tutorial OR guide) AND NOT php'
+```
+
+![Web 形式の入力 golang "machine learning" -php +(tutorial OR guide) を 4 つの項に分け、サーバーへ送るクエリ golang AND "machine learning" AND (tutorial OR guide) AND NOT php に組み立てる過程を示した図です。](../images/search-expression-ja.svg)
+
 ## 関数
 
 ### parseSearchExpressionNative()
@@ -555,7 +562,7 @@ const results = await client.search('articles', 'hello world', {
 });
 
 // 生成されるコマンド:
-// SEARCH articles hello world AND programming NOT deprecated
+// SEARCH articles "hello world" AND programming NOT deprecated
 // FILTER status = published FILTER lang = ja
 // SORT score DESC LIMIT 40,20
 ```

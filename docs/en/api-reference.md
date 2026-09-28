@@ -57,13 +57,13 @@ async authenticate(token?: string): Promise<void>
 ```
 
 Authenticates the current connection for administrative commands
-(MygramDB v1.10+).
+(MygramDB 1.10 or later).
 
-A v1.10 server gates `DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`,
-`OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and `SHOW VARIABLES` behind an `AUTH`
-issued on the same TCP connection, and refuses to start when its listener is not
-loopback and no token is configured. Ordinary `SEARCH` / `COUNT` / `GET` /
-`FACET` / `INFO` traffic never needs a token.
+Administrative commands — `DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`,
+`OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and `SHOW VARIABLES` — sit behind an
+`AUTH` issued on the same TCP connection, and the server refuses to start when
+its listener is not loopback and no token is configured. Ordinary `SEARCH` /
+`COUNT` / `GET` / `FACET` / `INFO` traffic never needs a token.
 
 Authentication is per connection, so it has to be repeated after any reconnect.
 Prefer setting `ClientConfig.adminToken`, which makes the client authenticate on
@@ -138,8 +138,8 @@ automatically so they reach the server as a single phrase token; use
 [`searchRaw()`](#searchraw) for boolean `AND`/`OR`/`NOT`/grouping expressions.
 
 **Parameters:**
-- `table` (string) - Name of the table to search. In a MygramDB v1.7+
-  multi-database deployment, pass a `database.table` identity (e.g.
+- `table` (string) - Name of the table to search. In a multi-database
+  deployment (MygramDB 1.7 or later), pass a `database.table` identity (e.g.
   `app_db.articles`); a bare name still works for single-database servers.
 - `query` (string) - Search query text
 - `options` (SearchOptions, optional) - Search options
@@ -238,10 +238,10 @@ async searchRaw(
 ): Promise<SearchResponse>
 ```
 
-Searches using a pre-built boolean expression (MygramDB v1.7+). The expression
-is sent verbatim (unquoted) so the server's AST parser can interpret
-`AND` / `OR` / `NOT` / parentheses — a quoted phrase that embeds those keywords
-is treated as a literal phrase (MygramDB v1.8+). Pair with
+Searches using a pre-built boolean expression (MygramDB 1.7 or later). The
+expression is sent verbatim (unquoted) so the server's AST parser can
+interpret `AND` / `OR` / `NOT` / parentheses — a quoted phrase that embeds
+those keywords is treated as a literal phrase (MygramDB 1.8 or later). Pair with
 [`convertSearchExpression()`](#exported-functions) to preserve OR / grouping
 semantics that `search()`'s AND/NOT decomposition cannot express.
 
@@ -260,7 +260,7 @@ const results = await client.searchRaw('articles', raw, { limit: 50 });
 
 `SearchRawOptions` covers only pagination and highlighting. To combine an
 expression with filters, sorting or fuzzy matching, use `search()` with
-[`queryMode: 'boolean'`](#querymode) instead (MygramDB v1.9+).
+[`queryMode: 'boolean'`](#querymode) instead (MygramDB 1.9 or later).
 
 ### searchRawWithHighlights()
 
@@ -294,10 +294,10 @@ async facet(
 ): Promise<FacetResponse>
 ```
 
-Aggregates the distinct values of a filter column with their document counts
-(MygramDB v1.6+). With no `query`, the aggregation spans the whole table; with a
-`query` (and optional `andTerms`/`notTerms`/`filters` refinements), it is scoped
-to the matching documents.
+Aggregates the distinct values of a filter column with their document counts.
+With no `query`, the aggregation spans the whole table; with a `query` (and
+optional `andTerms`/`notTerms`/`filters` refinements), it is scoped to the
+matching documents.
 
 **Parameters:**
 - `table` (string) - Table name (bare or `database.table`)
@@ -635,7 +635,9 @@ console.log((await client.dumpStatus()).status);
 console.log(await client.dumpInfo(path));
 ```
 
-## Runtime Variable Methods (v1.7+)
+## Runtime Variable Methods
+
+Requires MygramDB 1.7 or later.
 
 ### setVariable()
 
@@ -663,7 +665,9 @@ raw server response string.
 const table = await client.showVariables('logging%');
 ```
 
-## Sync Methods (v1.7+)
+## Sync Methods
+
+Requires MygramDB 1.7 or later.
 
 ### sync()
 
@@ -830,7 +834,7 @@ interface ClientConfig {
   maxResponseBytes?: number;  // Largest response frame accepted in bytes (default: 67108864)
   maxQueryLength?: number;    // Maximum query expression length before validation fails (default: 128)
   autoReconnect?: boolean;    // Reconnect + resend once on a pre-write dead socket, pure-JS transport only (default: false)
-  adminToken?: string;        // Sent as AUTH <token> on every connect (MygramDB v1.10+, default: none)
+  adminToken?: string;        // Sent as AUTH <token> on every connect (MygramDB 1.10+, default: none)
 }
 ```
 
@@ -846,7 +850,7 @@ command with a `ProtocolError`.
 
 ```typescript
 interface SearchOptions {
-  queryMode?: QueryMode;         // How the server reads `query` (default: 'literal', MygramDB v1.9+)
+  queryMode?: QueryMode;         // How the server reads `query` (default: 'literal', MygramDB 1.9+)
   limit?: number;                // Max results (default: 1000)
   offset?: number;               // Pagination offset (default: 0)
   andTerms?: string[];           // Additional required terms
@@ -865,7 +869,7 @@ interface SearchOptions {
 type QueryMode = 'literal' | 'boolean';
 ```
 
-How the server interprets the search text (MygramDB v1.9+):
+How the server interprets the search text (MygramDB 1.9 or later):
 
 - `literal` (default) — the text is a phrase. Reserved words such as `AND`, `OR`
   and `NOT`, grouping parentheses and backslashes are quoted so they match as
@@ -909,7 +913,7 @@ type FilterSpec = Record<string, FilterValue> | FilterCondition[];
 FILTER clauses accept two shapes. The record form is keyed by column and holds
 at most one condition per column; the array form is required when one column
 carries two conditions, such as a bounded range. Comparison operators other than
-`=` require MygramDB v1.9+.
+`=` require MygramDB 1.9 or later.
 
 ```typescript
 // Equality (every MygramDB version)
@@ -939,7 +943,7 @@ interface SearchRawOptions {
 
 ```typescript
 interface CountOptions {
-  queryMode?: QueryMode;  // How the server reads `query` (default: 'literal', MygramDB v1.9+)
+  queryMode?: QueryMode;  // How the server reads `query` (default: 'literal', MygramDB 1.9+)
   andTerms?: string[];    // Additional required terms
   notTerms?: string[];    // Excluded terms
   filters?: FilterSpec;   // Filter conditions
@@ -962,12 +966,12 @@ interface HighlightOptions {
 ```typescript
 interface FacetOptions {
   query?: string;         // Optional query scoping the aggregation
-  queryMode?: QueryMode;  // How the server reads `query` (default: 'literal', MygramDB v1.9+)
+  queryMode?: QueryMode;  // How the server reads `query` (default: 'literal', MygramDB 1.9+)
   andTerms?: string[];    // Additional required terms
   notTerms?: string[];    // Excluded terms
   filters?: FilterSpec;   // Filter conditions
   limit?: number;         // Max facet values in the page (0 = no limit)
-  offset?: number;        // Distinct values to skip before the page (MygramDB v1.9+)
+  offset?: number;        // Distinct values to skip before the page (MygramDB 1.9+)
 }
 ```
 
@@ -976,7 +980,7 @@ interface FacetOptions {
 ```typescript
 interface FacetResponse {
   results: FacetValue[];  // Facet values in the returned page, in server-defined order
-  totalCount: number;     // Distinct values before OFFSET/LIMIT (MygramDB v1.10+)
+  totalCount: number;     // Distinct values before OFFSET/LIMIT (MygramDB 1.10+)
 }
 
 interface FacetValue {
@@ -987,7 +991,7 @@ interface FacetValue {
 
 `totalCount` is how many distinct values exist in total, which is what a pager
 needs; `results.length` is only the size of the returned page. Against a server
-older than v1.10, which does not report a total, `totalCount` falls back to
+older than 1.10, which does not report a total, `totalCount` falls back to
 `results.length`.
 
 ```typescript
@@ -1010,7 +1014,7 @@ interface SearchResponse {
 ```typescript
 interface SearchResult {
   primaryKey: string;  // Primary key of the document
-  snippet?: string;    // Highlighted snippet, present only when highlighting is enabled (MygramDB v1.6+)
+  snippet?: string;    // Highlighted snippet, present only when highlighting is enabled
 }
 ```
 
@@ -1043,20 +1047,20 @@ Adjust your input or increase the limit if longer expressions are required.
 
 ```typescript
 class ServerError extends ProtocolError {
-  readonly code: number | undefined;  // Numeric code, undefined against a pre-v1.10 server
+  readonly code: number | undefined;  // Numeric code, undefined against a server older than 1.10
   readonly rawFrame: string;          // The complete ERROR frame as received
 }
 ```
 
-Thrown when the server rejects a command. MygramDB v1.10+ prefixes every `ERROR`
-frame with a numeric code (`ERROR 4007 Table not found`), so `code` carries that
-value and `message` holds only the human-readable remainder. Against an older
-server the frame has no code, `code` is `undefined`, and `message` is the whole
-payload.
+Thrown when the server rejects a command. Every `ERROR` frame is prefixed with
+a numeric code (`ERROR 4007 Table not found`) on MygramDB 1.10 or later, so
+`code` carries that value and `message` holds only the human-readable
+remainder. Against an older server the frame has no code, `code` is
+`undefined`, and `message` is the whole payload.
 
-`ServerError` extends `ProtocolError`, so code written against earlier releases —
-which saw every server-side rejection as a `ProtocolError` — keeps working. New
-code should branch on `code` rather than on message text.
+`ServerError` extends `ProtocolError`, so `catch (error instanceof
+ProtocolError)` still sees every server-side rejection. Branch on `code`
+rather than on message text.
 
 ```typescript
 import { ErrorCode, ServerError } from 'mygramdb-client';
@@ -1072,7 +1076,7 @@ try {
 
 ### ErrorCode
 
-The numeric error codes a MygramDB v1.10+ server can send, exported as a const
+A server on MygramDB 1.10 or later can send these numeric error codes, exported as a const
 object mirroring the server's own enumeration. Codes are grouped by range:
 general (0-999), configuration (1000-1999), MySQL (2000-2999), query parsing
 (3000-3999), index/search (4000-4999), storage (5000-5999), network/server
@@ -1112,8 +1116,8 @@ interface ServerInfo {
   indexSizeBytes: number;     // Index size in bytes
   docCount: number;           // Total document count
   tables: string[];           // List of table names
-  dataInitialized?: boolean;  // Every configured table finished its initial load (MygramDB v1.10+)
-  ready?: boolean;            // Ready to serve queries (MygramDB v1.10+)
+  dataInitialized?: boolean;  // Every configured table finished its initial load (MygramDB 1.10+)
+  ready?: boolean;            // Ready to serve queries (MygramDB 1.10+)
 }
 ```
 
@@ -1129,14 +1133,14 @@ interface ReplicationStatus {
   gtid: string;                      // Current GTID position
   statusStr: string;                 // Raw status string
   state?: ReplicationState;          // running | stopped | failed | not_configured
-  processedEvents?: number;          // Events processed so far (MygramDB v1.6+)
-  queueSize?: number;                // Replication queue size, present while running (MygramDB v1.6+)
-  crcErrors?: number;                // Binlog events whose checksum failed (MygramDB v1.10+)
-  schemaIncompatible?: boolean;      // Stopped because the MySQL schema no longer matches (MygramDB v1.10+)
-  lastErrorCode?: number;            // Error code of the last failure (MygramDB v1.10+)
-  lastError?: string;                // Message for lastErrorCode (MygramDB v1.10+)
-  lastAppliedUnixtime?: number;      // Unix time the last event was applied (MygramDB v1.10+)
-  secondsSinceLastApplied?: number;  // Replication lag in seconds (MygramDB v1.10+)
+  processedEvents?: number;          // Events processed so far
+  queueSize?: number;                // Replication queue size, present while running
+  crcErrors?: number;                // Binlog events whose checksum failed (MygramDB 1.10+)
+  schemaIncompatible?: boolean;      // Stopped because the MySQL schema no longer matches (MygramDB 1.10+)
+  lastErrorCode?: number;            // Error code of the last failure (MygramDB 1.10+)
+  lastError?: string;                // Message for lastErrorCode (MygramDB 1.10+)
+  lastAppliedUnixtime?: number;      // Unix time the last event was applied (MygramDB 1.10+)
+  secondsSinceLastApplied?: number;  // Replication lag in seconds (MygramDB 1.10+)
 }
 ```
 
@@ -1148,7 +1152,7 @@ stamped where the replication position advances, so it measures real progress
 rather than mere connectivity.
 
 `REPLICATION STATUS` is an administrative command, so reading any of this from a
-v1.10 server that has a token configured requires `adminToken`. Readiness does
+1.10 server that has a token configured requires `adminToken`. Readiness does
 not: `ready` and `dataInitialized` on [`ServerInfo`](#serverinfo) come from
 `INFO`, which is ungated. A monitor that only gates traffic on readiness needs no
 token; one that alerts on replication lag does.
@@ -1190,7 +1194,7 @@ interface CacheStats {
   currentMemoryBytes: number;             // Memory held by cached entries
   currentMemoryMb: number;                // currentMemoryBytes expressed in MB
   invalidationIndexMemoryBytes: number;   // Memory held by the invalidation reverse indexes
-  invalidationQueueMemoryBytes: number;   // Memory held by pending invalidations (MygramDB v1.10+)
+  invalidationQueueMemoryBytes: number;   // Memory held by pending invalidations (MygramDB 1.10+)
   accountedMemoryBytes: number;           // Total memory charged against the cache budget
   evictions: number;                      // Entries evicted for capacity or memory
   ttlExpirations: number;                 // Entries dropped on TTL expiry
@@ -1308,7 +1312,9 @@ class CircuitOpenError extends MygramError {
 
 For search expression parsing utilities, see [Search Expression](./search-expression.md).
 
-### Table identity helpers (v1.7+)
+### Table identity helpers
+
+Requires MygramDB 1.7 or later.
 
 ```typescript
 qualifyTableIdentity(table: string, database?: string): string

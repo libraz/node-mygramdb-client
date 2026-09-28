@@ -48,6 +48,13 @@ This searches for documents that:
 - Must not contain "deprecated"
 - Should contain the phrase "best practices"
 
+```typescript
+convertSearchExpression('golang "machine learning" -php +(tutorial OR guide)');
+// Returns: 'golang AND "machine learning" AND (tutorial OR guide) AND NOT php'
+```
+
+![The web-syntax input golang "machine learning" -php +(tutorial OR guide) split into four terms and joined into the server query golang AND "machine learning" AND (tutorial OR guide) AND NOT php.](../images/search-expression.svg)
+
 ## Functions
 
 ### parseSearchExpressionNative()
@@ -557,7 +564,7 @@ const results = await client.search('articles', 'hello world', {
 });
 
 // Generated command:
-// SEARCH articles hello world AND programming NOT deprecated
+// SEARCH articles "hello world" AND programming NOT deprecated
 // FILTER status = published FILTER lang = en
 // SORT score DESC LIMIT 40,20
 ```

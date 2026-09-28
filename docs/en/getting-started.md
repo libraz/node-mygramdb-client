@@ -2,6 +2,8 @@
 
 This guide will help you get started with the mygramdb-client library for Node.js.
 
+![A search call passing from the application through the client's validation and wire-quoting steps to the MygramDB server over TCP, with the response decoded on the way back and MySQL feeding the server through binlog replication.](../images/request-path.svg)
+
 ## Prerequisites
 
 - Node.js 22.0.0 or higher
@@ -121,7 +123,7 @@ The `MygramClient` constructor accepts a configuration object with the following
 | `optimizeTimeout` | number | `600000` | Deadline for `OPTIMIZE`, in milliseconds |
 | `recvBufferSize` | number | `65536` | Receive buffer size in bytes |
 | `maxResponseBytes` | number | `67108864` | Largest response frame accepted, in bytes |
-| `adminToken` | string | — | Sent as `AUTH <token>` on every connect (MygramDB v1.10+) |
+| `adminToken` | string | — | Sent as `AUTH <token>` on every connect (MygramDB 1.10 or later) |
 
 Dumps and `OPTIMIZE` walk the whole index, so they get their own deadlines
 instead of the request timeout — raising `timeout` for their sake would slow
@@ -140,12 +142,12 @@ const client = new MygramClient({
 
 ### Administrative Commands
 
-MygramDB v1.10 requires an `AUTH` on the same connection before it will run
-`DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`,
-`CACHE *`, `SET` or `SHOW VARIABLES`. Set `adminToken` and the client
-authenticates on every connect, reconnects included. Searching needs no token,
-and neither does any command against a server that was started without a token
-of its own — see [Administrative
+Administrative commands — `DUMP *`, `REPLICATION *`, `SYNC *`, `CONFIG *`,
+`OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET` and `SHOW VARIABLES` — require an
+`AUTH` on the same connection (MygramDB 1.10 or later). Set `adminToken` and
+the client authenticates on every connect, reconnects included. Searching
+needs no token, and neither does any command against a server that was
+started without a token of its own — see [Administrative
 Authentication](./advanced-usage.md#administrative-authentication).
 
 ```typescript
@@ -168,7 +170,7 @@ try {
   if (error instanceof ConnectionError) {
     console.error('Failed to connect to server:', error.message);
   } else if (error instanceof ServerError) {
-    // MygramDB v1.10+ also reports a numeric code; it is undefined on older servers.
+    // Numeric code available on MygramDB 1.10+; undefined on older servers.
     console.error(`Server returned an error (${error.code ?? 'no code'}):`, error.message);
   } else if (error instanceof TimeoutError) {
     console.error('Request timed out:', error.message);

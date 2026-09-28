@@ -3,13 +3,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/libraz/node-mygramdb-client/ci.yml?branch=main&label=CI)](https://github.com/libraz/node-mygramdb-client/actions)
 [![npm](https://img.shields.io/npm/v/mygramdb-client)](https://www.npmjs.com/package/mygramdb-client)
 [![codecov](https://codecov.io/gh/libraz/node-mygramdb-client/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/node-mygramdb-client)
-[![License](https://img.shields.io/github/license/libraz/node-mygramdb-client)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
 
 Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine with MySQL replication support.
 
-Tracks MygramDB through v1.10.2 — typed error codes, administrative `AUTH`,
-readiness on `INFO`, boolean query mode, comparison filters and facet
-pagination — and stays compatible with servers back to v1.6.
+**Server compatibility:** MygramDB 1.6 or later, with the protocol implemented through 1.10.2. A server rejects options it predates, and an older server's `ERROR` frames carry no numeric code; the [API reference](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/api-reference.md) marks each option that needs a newer server.
+
+<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/request-path.svg" alt="A search call passing from the application through the client's validation and wire-quoting steps to the MygramDB server over TCP, with the response decoded on the way back and MySQL feeding the server through binlog replication." width="960">
 
 ## Overview
 
@@ -29,6 +29,8 @@ MygramDB answers full-text queries from memory instead of an on-disk MySQL FULLT
 - **Full Protocol Support** — All MygramDB commands (SEARCH, COUNT, GET, INFO, etc.)
 - **Connection Pool** — Built-in `MygramPool` for hundreds of req/s, with backpressure, load shedding, self-healing reconnects, and an optional circuit breaker
 - **Resilience** — Pool circuit breaker (fail fast when the server is unreachable) and standalone-client `autoReconnect`
+- **Typed Errors** — Numeric server error codes on `ServerError`, so retry decisions never depend on message text
+- **IPv4 and IPv6** — Connects to IPv6 literals and to hostnames that resolve only to `AAAA` records, trying every resolved address
 - **Type Safety** — Full TypeScript definitions
 - **Promise-based API** — Modern async/await interface
 
@@ -47,7 +49,7 @@ pnpm add mygramdb-client
 ## Quick Start
 
 ```typescript
-import { createMygramClient, simplifySearchExpression } from 'mygramdb-client';
+import { createMygramClient } from 'mygramdb-client';
 
 const client = createMygramClient({
   host: 'localhost',
@@ -69,7 +71,7 @@ const doc = await client.get('articles', '12345');
 client.disconnect();
 ```
 
-### Connection Pooling
+## Connection Pooling
 
 A single client serializes every command through one socket. For high
 throughput (hundreds of req/s), use the built-in `MygramPool`, which fans
@@ -91,33 +93,69 @@ Add `circuitBreaker` to make the pool fail fast with `CircuitOpenError` when the
 server is unreachable, and `onEvent` for discrete lifecycle events. A standalone
 `MygramClient` can set `autoReconnect` to reconnect-and-resend once on a
 pre-write dead socket. See
-[Connection Pooling](docs/en/advanced-usage.md#connection-pooling) for sizing
-guidance and [Circuit breaker](docs/en/advanced-usage.md#circuit-breaker) for
-the resilience features.
+[Connection Pooling](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/advanced-usage.md#connection-pooling)
+for sizing guidance and
+[Circuit breaker](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/advanced-usage.md#circuit-breaker)
+for the resilience features.
 
 ## Search Expressions
 
-Parse web-style search queries into structured search parameters:
+`convertSearchExpression()` turns web-style input into a server boolean query:
+unprefixed terms and `+` terms are joined with `AND`, `-` terms become
+`AND NOT`, and an OR chain stays in parentheses.
+
+<img src="https://raw.githubusercontent.com/libraz/node-mygramdb-client/main/docs/images/search-expression.svg" alt="The web-syntax input golang &quot;machine learning&quot; -php +(tutorial OR guide) split into four terms and joined into the server query golang AND &quot;machine learning&quot; AND (tutorial OR guide) AND NOT php." width="960">
+
+`search()` sends its query as literal text, so a boolean expression goes through
+`searchRaw()`, or through `search()` with `queryMode: 'boolean'` when it also
+needs filters, sorting, fuzzy matching or highlighting:
 
 ```typescript
-import { simplifySearchExpression } from 'mygramdb-client';
+import { convertSearchExpression } from 'mygramdb-client';
 
-// Space = AND, - = NOT, "" = phrase, OR = OR, () = grouping
-const expr = simplifySearchExpression('hello world -spam');
-// → { mainTerm: 'hello', andTerms: ['world'], notTerms: ['spam'] }
+const raw = convertSearchExpression('golang "machine learning" -php +(tutorial OR guide)');
+// → 'golang AND "machine learning" AND (tutorial OR guide) AND NOT php'
 
-const results = await client.search('articles', expr.mainTerm, {
-  andTerms: expr.andTerms,
-  notTerms: expr.notTerms,
-  limit: 100,
-  offset: 50,
-  filters: { status: 'published', lang: 'en' },
-  sortColumn: 'created_at',
-  sortDesc: true
+const res = await client.searchRaw('articles', raw, { limit: 50 });
+
+await client.search('articles', raw, {
+  queryMode: 'boolean',
+  filters: { status: 'published' },
+  sortColumn: '_score'
 });
 ```
 
-## MygramDB v1.6 Features
+In the default `literal` mode, plain user text keeps matching as a phrase. For
+input without OR or grouping, `simplifySearchExpression()` splits it into a main
+term plus `AND`/`NOT` terms for `search()`; it throws on OR or grouping, so check
+with `hasComplexExpression()` first when the input may contain either:
+
+```typescript
+import {
+  convertSearchExpression,
+  hasComplexExpression,
+  parseSearchExpression,
+  simplifySearchExpression
+} from 'mygramdb-client';
+
+const parsed = parseSearchExpression(userInput);
+let results;
+if (hasComplexExpression(parsed)) {
+  results = await client.searchRaw('articles', convertSearchExpression(userInput));
+} else {
+  const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
+  results = await client.search('articles', mainTerm, {
+    andTerms,
+    notTerms,
+    limit: 100,
+    filters: { status: 'published', lang: 'en' },
+    sortColumn: 'created_at',
+    sortDesc: true
+  });
+}
+```
+
+## Search Features
 
 ### BM25 Relevance Scoring
 
@@ -165,87 +203,7 @@ for (const r of results.results) {
 Pass an empty `{}` to enable highlighting with server defaults
 (`<em>`/`</em>`, 100 code points, up to 3 fragments).
 
-### Facets
-
-Aggregate distinct filter-column values with document counts. Optionally
-scope the aggregation to a search result set:
-
-```typescript
-// All distinct statuses:
-const all = await client.facet('articles', 'status');
-
-// Top categories among documents matching "machine learning":
-const top = await client.facet('articles', 'category', {
-  query: 'machine learning',
-  filters: { status: '1' },
-  limit: 10
-});
-
-for (const v of top.results) {
-  console.log(`${v.value}: ${v.count}`);
-}
-```
-
-## MygramDB v1.7 Features
-
-### Multi-database (qualified table identity)
-
-A v1.7+ instance can index tables from more than one database. Reference a
-table as `database.table`; bare names still work on single-database servers.
-
-```typescript
-await client.search('app_db.articles', 'hello');
-
-import { qualifyTableIdentity, parseTableIdentity } from 'mygramdb-client';
-qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
-parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
-```
-
-### Boolean search
-
-`search()` sends the query as a single (auto-quoted) token. For boolean
-`AND`/`OR`/`NOT`/grouping, build the expression and pass it to `searchRaw()`:
-
-```typescript
-import { convertSearchExpression } from 'mygramdb-client';
-
-const raw = convertSearchExpression('python OR (ruby AND rails)');
-const res = await client.searchRaw('articles', raw, { limit: 50 });
-```
-
-`searchRaw()` sends the expression verbatim (unquoted) so the server's boolean
-parser interprets `AND`/`OR`/`NOT`/grouping; a quoted phrase embedding those
-keywords is treated as a literal (MygramDB v1.8+).
-
-### Runtime variables and on-demand sync
-
-```typescript
-await client.setVariable('logging.level', 'info');
-console.log(await client.showVariables('logging%'));
-
-await client.sync('app_db.articles');
-console.log(await client.syncStatus());
-await client.syncStop('app_db.articles');
-```
-
-## MygramDB v1.9 Features
-
-### Boolean query mode with typed clauses
-
-`searchRaw()` sends an expression on its own. To combine one with filters,
-sorting, fuzzy matching or highlighting, pass `queryMode: 'boolean'` to
-`search()`. The default stays `literal`, so plain user text keeps matching as a
-phrase:
-
-```typescript
-await client.search('articles', 'alpha AND (xqz OR jkv)', {
-  queryMode: 'boolean',
-  filters: { status: 'published' },
-  sortColumn: '_score'
-});
-```
-
-### Comparison filters
+### Comparison Filters
 
 Filters accept `=`, `!=`, `<>`, `>`, `>=`, `<` and `<=`. Use the array form when
 one column needs two conditions:
@@ -259,18 +217,69 @@ await client.search('products', 'laptop', {
 });
 ```
 
-### Facet pagination
+### Facets
+
+Aggregate distinct filter-column values with document counts, optionally
+scoped to a search result set, and page through them with `limit`/`offset`:
 
 ```typescript
+// Top categories among documents matching "machine learning":
+const top = await client.facet('articles', 'category', {
+  query: 'machine learning',
+  filters: { status: '1' },
+  limit: 10
+});
+
+for (const v of top.results) {
+  console.log(`${v.value}: ${v.count}`);
+}
+
 const page = await client.facet('articles', 'category', { limit: 20, offset: 40 });
 console.log(`${page.results.length} of ${page.totalCount} categories`);
 ```
 
-## MygramDB v1.10 Features
+### Multi-database Tables
 
-### Administrative authentication
+A server can index tables from more than one database. Reference a table as
+`database.table`; bare names work on single-database servers.
 
-A v1.10 server gates administrative commands (`DUMP *`, `REPLICATION *`,
+```typescript
+await client.search('app_db.articles', 'hello');
+
+import { qualifyTableIdentity, parseTableIdentity } from 'mygramdb-client';
+qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'
+parseTableIdentity('app_db.articles');      // { database: 'app_db', table: 'articles' }
+```
+
+## Wire Quoting
+
+Search terms, filter values, `AND`/`NOT` terms, highlight tags, primary keys
+and command arguments all go through the same quoting decision. A value is
+quoted when it is empty, a reserved clause keyword (`AND`, `OR`, `NOT`,
+`FILTER`, `SORT`, `LIMIT`, `OFFSET`, `HIGHLIGHT`, `FUZZY`, `FACET`, `ORDER`,
+matched case-insensitively), or contains ASCII or Unicode whitespace
+(including the full-width and no-break space a pasted value or a full-width
+IME can carry), a control character, a quote, a backslash or a parenthesis.
+Callers always pass the raw, unquoted text:
+
+```typescript
+// The full-width space stays inside one term.
+await client.search('articles', '機械学習　チュートリアル');
+
+// A filter value equal to a reserved keyword still matches literally.
+await client.search('articles', 'q', { filters: { status: 'AND' } });
+```
+
+`get()` quotes a primary key that contains whitespace or equals a reserved word,
+so a key returned by `search()` can always be passed back to `get()` unchanged.
+Search results and `get()` documents decode a primary key or string value the
+server quoted the same way.
+
+## Authentication and Error Codes
+
+### Administrative Authentication
+
+The server gates administrative commands (`DUMP *`, `REPLICATION *`,
 `SYNC *`, `CONFIG *`, `OPTIMIZE`, `DEBUG *`, `CACHE *`, `SET`,
 `SHOW VARIABLES`) behind `AUTH`. Set `adminToken` and the client authenticates
 on every connect, reconnects and pooled connections included:
@@ -283,9 +292,9 @@ await client.dumpSave('/var/lib/mygramdb/dump.mgd');
 
 Ordinary search traffic needs no token.
 
-### Typed error codes
+### Typed Error Codes
 
-`ERROR` frames now carry a numeric code, so failures can be classified without
+`ERROR` frames carry a numeric code, so failures can be classified without
 matching message text. Server rejections arrive as `ServerError`, a subclass of
 `ProtocolError`:
 
@@ -301,7 +310,7 @@ try {
 }
 ```
 
-### Readiness on INFO
+### Readiness
 
 ```typescript
 const info = await client.info();
@@ -310,11 +319,13 @@ if (info.ready === false) {
 }
 ```
 
-### Replication lag and operation deadlines
+## Server Administration
+
+### Replication Lag and Operation Deadlines
 
 `getReplicationStatus()` reports `secondsSinceLastApplied`, stamped where the
 replication position advances, so it measures progress rather than
-connectivity. It is an administrative command, so a v1.10 server with a token
+connectivity. It is an administrative command, so a server with a token
 configured needs `adminToken` to answer it — unlike the readiness fields on
 `INFO`. Dumps and `OPTIMIZE` get their own deadlines, leaving `timeout` short
 enough to detect a stalled query:
@@ -328,72 +339,15 @@ if ((status.secondsSinceLastApplied ?? 0) > 60) {
 }
 ```
 
-## MygramDB v1.10.2 Features
-
-A v1.10.2 server corrects several places where a client and the server
-disagreed about what a value meant; this client follows every one of them.
-
-### One quoting rule for every wire-bound string
-
-Search terms, filter values, `AND`/`NOT` terms, highlight tags, primary keys
-and command arguments all go through the same quoting decision. A value is
-quoted when it is empty, a reserved clause keyword (`AND`, `OR`, `NOT`,
-`FILTER`, `SORT`, `LIMIT`, `OFFSET`, `HIGHLIGHT`, `FUZZY`, `FACET`, `ORDER` —
-matched case-insensitively), or contains ASCII or Unicode whitespace
-(including the full-width and no-break space a pasted value or a full-width
-IME can carry), a control character, a quote, a backslash or a parenthesis.
-Callers always pass the raw, unquoted text — the client quotes it as needed:
+### Runtime Variables and On-demand Sync
 
 ```typescript
-// A full-width space no longer splits into two unintended terms.
-await client.search('articles', '機械学習　チュートリアル');
+await client.setVariable('logging.level', 'info');
+console.log(await client.showVariables('logging%'));
 
-// A filter value that happens to equal a reserved keyword still matches literally.
-await client.search('articles', 'q', { filters: { status: 'AND' } });
-```
-
-### Quoted primary keys
-
-`get()` quotes a primary key containing whitespace or a reserved word instead
-of rejecting it — a key is data, not an identifier, so a key returned by
-`search()` can always be passed back to `get()` unchanged. Search results and
-`get()` documents decode a primary key or string value the server quoted the
-same way.
-
-### IPv6 servers
-
-A server reachable only by an IPv6 literal or a hostname that resolves solely
-to an `AAAA` record now connects; the client tries every address the
-hostname resolves to.
-
-### Multi-line responses read completely
-
-A `SEARCH`/`COUNT` reply carrying `HIGHLIGHT` rows or a `DEBUG` block, and a
-non-empty `SHOW VARIABLES` table, are now read to their actual end even when
-a chunk boundary happens to land right after the header line — which
-previously looked like a complete response and truncated the rest.
-
-### `simplifySearchExpression()` rejects OR and grouping
-
-`simplifySearchExpression()` and `parseSearchExpressionNative()` now throw on
-an expression containing OR or grouping instead of silently wrapping it in
-parentheses as a single `mainTerm`. That synthesized term was then re-quoted
-by `search()`'s own escaping, turning `(python OR ruby)` into one opaque
-literal phrase instead of a boolean OR. Use `convertSearchExpression()` with
-`searchRaw()` for an expression that may contain OR or grouping:
-
-```typescript
-import { convertSearchExpression, hasComplexExpression, parseSearchExpression } from 'mygramdb-client';
-
-const parsed = parseSearchExpression(userInput);
-let results;
-if (hasComplexExpression(parsed)) {
-  // Boolean expression: send it verbatim, because search() quotes its query as literal text.
-  results = await client.searchRaw('articles', convertSearchExpression(userInput));
-} else {
-  const { mainTerm, andTerms, notTerms } = simplifySearchExpression(userInput);
-  results = await client.search('articles', mainTerm, { andTerms, notTerms });
-}
+await client.sync('app_db.articles');
+console.log(await client.syncStatus());
+await client.syncStop('app_db.articles');
 ```
 
 ## TypeScript
@@ -411,6 +365,13 @@ import type {
 } from 'mygramdb-client';
 ```
 
+## Documentation
+
+- [Getting Started](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/getting-started.md) — install, configuration, and error handling
+- [Search Expressions](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/search-expression.md) — parse and convert web-style search input
+- [API Reference](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/api-reference.md) — every method, option, and type
+- [Advanced Usage](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/advanced-usage.md) — connection pooling, resilience, authentication, and error codes
+
 ## Development
 
 ```bash
@@ -423,4 +384,4 @@ yarn lint:fix     # Auto-fix lint + format issues
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/libraz/node-mygramdb-client/blob/main/LICENSE)
