@@ -9,8 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Tracks MygramDB **v1.10.2**, a corrective release that unifies wire quoting
 across every string reaching the server and fixes several response-framing
-bugs. The e2e docker stack still defaults to the `1.10.0` server image;
-`MYGRAMDB_VERSION` pins it to `1.10.2` once a matching image is published.
+bugs. The e2e docker stack defaults to the `1.10.2` server image.
 
 ### Fixed
 
