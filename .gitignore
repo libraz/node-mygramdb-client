@@ -55,3 +55,6 @@ pnpm-debug.log*
 # Claude
 claude.md
 .claude/
+
+# Serena language-server state
+.serena/
