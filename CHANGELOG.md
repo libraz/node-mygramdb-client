@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-28
+
 Tracks MygramDB **v1.10.2**, a corrective release that unifies wire quoting
 across every string reaching the server and fixes several response-framing
 bugs. The e2e docker stack defaults to the `1.10.2` server image.
@@ -50,6 +52,12 @@ bugs. The e2e docker stack defaults to the `1.10.2` server image.
   framing fix in its `sendCommand` transport — plus `Connect()` now resolves
   and tries every address `getaddrinfo` returns (reaching an IPv6-only host)
   and no longer raises `SIGPIPE` on a send to a reset connection.
+
+### Testing
+
+- **The docker e2e suite runs across the server's database matrix** —
+  MySQL 8.4 and 9.7 and MariaDB 10.11, 11.8 and 12.3 — through
+  `yarn test:e2e:docker:matrix`, with `--only` to select targets.
 
 ## [1.5.0] - 2026-08-10
 
@@ -365,6 +373,7 @@ existing single-database, single-token usage produces byte-identical commands.
 - Input validation and error handling
 - TypeScript type definitions
 
+[1.6.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.2.1...v1.3.0
