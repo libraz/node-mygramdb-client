@@ -3,7 +3,7 @@
 # `mygramdb -c` (SKIP_CONFIG_GEN=true bypasses the image's env-based generator).
 
 mysql:
-  host: "mysql"            # docker-compose service name
+  host: "mysql" # docker-compose service name
   port: 3306
   user: "repl_user"
   password: "test_password"

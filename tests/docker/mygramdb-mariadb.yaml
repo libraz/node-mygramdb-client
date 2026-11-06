@@ -4,7 +4,7 @@
 # Identical to mygramdb.yaml except for the mysql.host below.
 
 mysql:
-  host: "mariadb"           # docker-compose service name
+  host: "mariadb" # docker-compose service name
   port: 3306
   user: "repl_user"
   password: "test_password"

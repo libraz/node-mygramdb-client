@@ -22,16 +22,16 @@ docker compose -f tests/docker/docker-compose.yml down -v
 
 ## Knobs (environment variables)
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `MYGRAMDB_VERSION` | `1.12.0` | Server image tag (`ghcr.io/libraz/mygram-db:<tag>`; e.g. `1.8.0`, `latest`) |
-| `DB_FLAVOR` | `mysql` | `mysql` or `mariadb`; selects the compose file and seed database |
-| `MYSQL_VERSION` | `8.4` | MySQL image tag (used when `DB_FLAVOR=mysql`) |
-| `MARIADB_VERSION` | `11.8` | MariaDB image tag (used when `DB_FLAVOR=mariadb`) |
-| `MYGRAM_PORT` | `11016` | Host port mapped to the server's TCP API |
-| `MYGRAM_HTTP_PORT` | `18080` | Host port mapped to the server's HTTP/health API |
+| Variable             | Default           | Purpose                                                                              |
+| -------------------- | ----------------- | ------------------------------------------------------------------------------------ |
+| `MYGRAMDB_VERSION`   | `1.12.0`          | Server image tag (`ghcr.io/libraz/mygram-db:<tag>`; e.g. `1.8.0`, `latest`)          |
+| `DB_FLAVOR`          | `mysql`           | `mysql` or `mariadb`; selects the compose file and seed database                     |
+| `MYSQL_VERSION`      | `8.4`             | MySQL image tag (used when `DB_FLAVOR=mysql`)                                        |
+| `MARIADB_VERSION`    | `11.8`            | MariaDB image tag (used when `DB_FLAVOR=mariadb`)                                    |
+| `MYGRAM_PORT`        | `11016`           | Host port mapped to the server's TCP API                                             |
+| `MYGRAM_HTTP_PORT`   | `18080`           | Host port mapped to the server's HTTP/health API                                     |
 | `MYGRAM_ADMIN_TOKEN` | `e2e-admin-token` | Administrative token given to the server and, when it supports `AUTH`, to the client |
-| `KEEP_UP` | `0` | When `1`, leave the stack running after tests (debugging) |
+| `KEEP_UP`            | `0`               | When `1`, leave the stack running after tests (debugging)                            |
 
 ```bash
 MYGRAMDB_VERSION=1.8.0 yarn test:e2e:docker   # older server, same suite
