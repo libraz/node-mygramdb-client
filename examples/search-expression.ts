@@ -102,7 +102,6 @@ async function searchExpressionExample(): Promise<void> {
   console.log(`    Input: "${complexExpr}"`);
   const parsed = parseSearchExpression(complexExpr);
   console.log(`    Required terms: [${parsed.requiredTerms.join(', ')}]`);
-  console.log(`    Optional terms: [${parsed.optionalTerms.join(', ')}]`);
   console.log(`    Excluded terms: [${parsed.excludedTerms.join(', ')}]`);
   console.log(`    Raw expression: "${parsed.rawExpression}"`);
 
@@ -115,7 +114,6 @@ async function searchExpressionExample(): Promise<void> {
     console.log(`    Main term: "${nativeParsed.mainTerm}"`);
     console.log(`    AND terms: [${nativeParsed.andTerms.map((t) => `"${t}"`).join(', ')}]`);
     console.log(`    NOT terms: [${nativeParsed.notTerms.map((t) => `"${t}"`).join(', ')}]`);
-    console.log(`    Optional terms: [${nativeParsed.optionalTerms.map((t) => `"${t}"`).join(', ')}]`);
     console.log('    Note: Native parser uses C++ for better performance');
   } catch (error) {
     console.log('    Native parser not available (using JavaScript fallback)');
