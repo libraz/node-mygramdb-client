@@ -9,12 +9,24 @@
 #   MYGRAM_E2E_SEEDED=1 yarn test:e2e
 #   docker compose -f tests/docker/docker-compose.yml down -v
 #
-# Override the server version with MYGRAMDB_VERSION (defaults to the v1.10 line).
+# Override the server version with MYGRAMDB_VERSION (defaults to the v1.12 line).
+#
+# MygramDB v1.11 and later read column metadata from the binlog itself, so the
+# source must run with binlog_row_metadata=FULL; v1.12 also verifies log_bin=ON.
+
+# The project name is declared here rather than inferred from the directory
+# name, which would be "docker" — a name any other stack in a directory called
+# `docker` also claims. Without it, `up` adopts that stack's services and
+# `down -v --remove-orphans` tears the whole thing down.
+#
+# Container names are left to compose so they inherit that project prefix.
+# A fixed container_name is global to the docker daemon, so a sibling client
+# repo running its own equivalent stack would collide on the literal name.
+name: node-mygram-e2e
 
 services:
   mysql:
     image: mysql:${MYSQL_VERSION:-8.4}
-    container_name: mygram_e2e_mysql
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-test_root_password}
       MYSQL_DATABASE: testdb
@@ -26,6 +38,7 @@ services:
       - --gtid-mode=ON
       - --enforce-gtid-consistency=ON
       - --binlog-row-image=FULL
+      - --binlog-row-metadata=FULL
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
@@ -41,8 +54,7 @@ services:
       start_period: 30s
 
   mygramdb:
-    image: ghcr.io/libraz/mygram-db:${MYGRAMDB_VERSION:-1.10.2}
-    container_name: mygram_e2e_server
+    image: ghcr.io/libraz/mygram-db:${MYGRAMDB_VERSION:-1.12.0}
     depends_on:
       mysql:
         condition: service_healthy

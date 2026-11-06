@@ -25,7 +25,9 @@ else
   COMPOSE_FILE="docker-compose.yml"
   DB_SERVICE="mysql"
 fi
-COMPOSE=(docker compose -f "${SCRIPT_DIR}/${COMPOSE_FILE}")
+# -p pins the project even if the compose file is ever invoked from a context
+# that overrides it, so teardown can never reach an unrelated stack.
+COMPOSE=(docker compose -p node-mygram-e2e -f "${SCRIPT_DIR}/${COMPOSE_FILE}")
 
 MYGRAM_PORT="${MYGRAM_PORT:-11016}"
 MYGRAM_HTTP_PORT="${MYGRAM_HTTP_PORT:-18080}"
@@ -64,7 +66,7 @@ trap cleanup EXIT
 # the next `up` with a name conflict that says nothing about the real cause.
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 
-echo "==> Starting e2e stack (${DB_FLAVOR}, mygramdb=${MYGRAMDB_VERSION:-1.10.2})"
+echo "==> Starting e2e stack (${DB_FLAVOR}, mygramdb=${MYGRAMDB_VERSION:-1.12.0})"
 if ! MYGRAM_PORT="${MYGRAM_PORT}" MYGRAM_HTTP_PORT="${MYGRAM_HTTP_PORT}" \
   MYGRAM_ADMIN_TOKEN="${MYGRAM_ADMIN_TOKEN}" "${COMPOSE[@]}" up -d --wait; then
   echo "ERROR: e2e stack did not come up" >&2
