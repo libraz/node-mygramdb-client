@@ -12,11 +12,12 @@
  * - `(expr)` - Grouping
  * - `OR` - Logical OR between terms
  *
- * Examples:
+ * Examples (after ToQueryString()):
  * - `golang tutorial` → `golang AND tutorial` (implicit AND)
  * - `"machine learning" tutorial` → `"machine learning" AND tutorial` (phrase search)
  * - `golang -old` → `golang AND NOT old`
- * - `python OR ruby` → `(python OR ruby)`
+ * - `python OR ruby` → `(python OR ruby)` (raw OR sub-expressions are always wrapped in parens)
+ * - `a OR b c` → `(a OR b c)` (an expression with a top-level OR is one group; implicit AND binds tighter)
  * - `golang +(tutorial OR guide)` → `golang AND (tutorial OR guide)`
  * - `機械学習　チュートリアル` → `機械学習 AND チュートリアル` (full-width space)
  */
@@ -37,8 +38,9 @@ namespace mygramdb::client {
 struct SearchExpression {
   std::vector<std::string> required_terms;  // Terms with a + prefix, and unprefixed terms (implicit AND)
   std::vector<std::string> excluded_terms;  // Terms with - prefix (NOT)
-  std::vector<std::string> optional_terms;  // Unused; kept for source compatibility
   std::string raw_expression;               // Formatted AST-syntax text for a bare OR/grouped sub-expression
+  std::vector<bool> required_is_group;      // Parallel to required_terms: entry is a formatted (...) group
+  std::vector<bool> excluded_is_group;      // Parallel to excluded_terms: entry is a formatted (...) group
 
   /**
    * @brief Check if expression has OR operators or grouping
@@ -51,7 +53,7 @@ struct SearchExpression {
    * Generates proper boolean query string:
    * - Required terms: joined with AND
    * - Excluded terms: prefixed with NOT
-   * - Optional terms: joined with OR (if no required terms)
+   * - Grouped and OR sub-expressions: wrapped in parentheses and joined with AND
    *
    * @return Query string compatible with QueryASTParser
    */
@@ -75,12 +77,13 @@ struct SearchExpression {
  * auto expr = ParseSearchExpression("+golang tutorial");
  * if (expr) {
  *   // expr->required_terms = ["golang", "tutorial"]
- *   // optional_terms is unused; every unprefixed term is required (implicit AND)
+ *   // every unprefixed term is required (implicit AND)
  * }
  *
  * auto expr = ParseSearchExpression("+golang +(tutorial OR guide) -old");
  * if (expr) {
  *   // expr->required_terms = ["golang", "(tutorial OR guide)"]
+ *   // expr->required_is_group = [false, true]
  *   // expr->excluded_terms = ["old"]
  *   // raw_expression stays empty: a parenthesized group after +/- is kept
  *   // as one required_terms entry, not folded into raw_expression

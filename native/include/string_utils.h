@@ -7,9 +7,37 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mygramdb::utils {
+
+/**
+ * @brief Convert one ASCII byte to lowercase, leaving every other byte unchanged.
+ */
+constexpr unsigned char AsciiToLower(unsigned char character) noexcept {
+  if (character >= 'A' && character <= 'Z') {
+    return static_cast<unsigned char>(character + ('a' - 'A'));
+  }
+  return character;
+}
+
+/**
+ * @brief Compare strings using ASCII-only case folding without allocating.
+ *
+ * Bytes outside ASCII are compared exactly.
+ */
+inline bool EqualsAsciiCaseInsensitive(std::string_view lhs, std::string_view rhs) noexcept {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < lhs.size(); ++i) {
+    if (AsciiToLower(static_cast<unsigned char>(lhs[i])) != AsciiToLower(static_cast<unsigned char>(rhs[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /**
  * @brief Normalize text according to configuration

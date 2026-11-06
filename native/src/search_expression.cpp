@@ -6,7 +6,6 @@
 #include "../include/search_expression.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <sstream>
@@ -40,19 +39,13 @@ inline bool IsFullWidthSpace(const std::string& str, size_t pos) {
 }
 
 /**
- * @brief Check whether a required/excluded term is a parenthesized sub-expression
+ * @brief Check whether entry @p index of a term list is a formatted group
  *
- * A parenthesized expression following unary +/- (CaptureParenExpression,
- * already fully quoted/escaped) is retained as one required/excluded-term
- * entry instead of being folded into raw_expression. Detecting that
- * structural representation this way -- never by scanning for an "OR"
- * substring inside a token, which would misclassify ordinary words such as
- * ORDER and ORANGE -- lets HasComplexExpression and ToQueryString agree on
- * which entries are already wire-formatted and which are plain terms still
- * needing NeedsWireQuoting's decision.
+ * @p is_group runs parallel to the term list (SearchExpression::
+ * required_is_group / excluded_is_group); a missing flag means plain text.
  */
-inline bool IsParenthesizedSubexpression(const std::string& term) {
-  return term.size() >= 2 && term.front() == '(' && term.back() == ')';
+inline bool IsGroupEntry(const std::vector<bool>& is_group, size_t index) {
+  return index < is_group.size() && is_group[index];
 }
 
 /**
@@ -128,20 +121,10 @@ class Tokenizer {
     // the client treats it as a plain term while the server re-tokenizes
     // the same bytes as the OR operator, splitting "tom AND or AND jerry"
     // into a boolean expression the AST parser cannot parse.
-    if (pos_ + 2 <= input_.size() && std::toupper(static_cast<unsigned char>(input_[pos_])) == 'O' &&
-        std::toupper(static_cast<unsigned char>(input_[pos_ + 1])) == 'R') {
-      // Make sure it's a whole word (not part of another word)
-      bool is_whole_word = true;
-      if (pos_ > 0 && std::isalnum(static_cast<unsigned char>(input_[pos_ - 1])) != 0) {
-        is_whole_word = false;
-      }
-      if (pos_ + 2 < input_.size() && std::isalnum(static_cast<unsigned char>(input_[pos_ + 2])) != 0) {
-        is_whole_word = false;
-      }
-      if (is_whole_word) {
-        pos_ += 2;
-        return {TokenType::kOr, "OR"};
-      }
+    if (pos_ + 2 <= input_.size() && mygramdb::utils::EqualsAsciiCaseInsensitive(input_.substr(pos_, 2), "OR") &&
+        IsOperatorBoundaryBefore(pos_) && IsOperatorBoundaryAfter(pos_ + 2)) {
+      pos_ += 2;
+      return {TokenType::kOr, "OR"};
     }
 
     // Term (everything else)
@@ -153,6 +136,35 @@ class Tokenizer {
   void SetPosition(size_t pos) { pos_ = pos; }
 
  private:
+  /**
+   * @brief Whether an operator word may end at @p pos: end of input, ASCII or
+   *        U+3000 whitespace, a parenthesis or a double quote
+   *
+   * Anything else continues the word, so "OR-tools" and "OR回路" stay terms.
+   */
+  [[nodiscard]] bool IsOperatorBoundaryAfter(size_t pos) const {
+    if (pos >= input_.size()) {
+      return true;
+    }
+    const char current_char = input_[pos];
+    return detail::IsAsciiSpace(static_cast<unsigned char>(current_char)) || current_char == '(' ||
+           current_char == ')' || current_char == '"' || IsFullWidthSpace(input_, pos);
+  }
+
+  /**
+   * @brief Whether an operator word may start at @p pos (same delimiters as IsOperatorBoundaryAfter)
+   */
+  [[nodiscard]] bool IsOperatorBoundaryBefore(size_t pos) const {
+    constexpr size_t kFullWidthSpaceBytes = 3;
+    if (pos == 0) {
+      return true;
+    }
+    const char previous_char = input_[pos - 1];
+    return detail::IsAsciiSpace(static_cast<unsigned char>(previous_char)) || previous_char == '(' ||
+           previous_char == ')' || previous_char == '"' ||
+           (pos >= kFullWidthSpaceBytes && IsFullWidthSpace(input_, pos - kFullWidthSpaceBytes));
+  }
+
   void SkipWhitespace() {
     while (pos_ < input_.size()) {
       // Check for full-width space (3 bytes)
@@ -161,7 +173,7 @@ class Tokenizer {
         continue;
       }
       // Check for ASCII whitespace
-      if (std::isspace(static_cast<unsigned char>(input_[pos_])) != 0) {
+      if (detail::IsAsciiSpace(static_cast<unsigned char>(input_[pos_]))) {
         ++pos_;
         continue;
       }
@@ -180,8 +192,8 @@ class Tokenizer {
       // '+' and '-' are unary operators only when Next() sees them at a token
       // boundary. Once a term has started they are ordinary text, as in
       // "COVID-19", "e-mail", and "C++".
-      if (std::isspace(static_cast<unsigned char>(current_char)) != 0 || current_char == '(' || current_char == ')' ||
-          current_char == '"') {
+      if (detail::IsAsciiSpace(static_cast<unsigned char>(current_char)) || current_char == '(' ||
+          current_char == ')' || current_char == '"') {
         break;
       }
       term += current_char;
@@ -234,19 +246,30 @@ class Parser {
   Expected<SearchExpression, Error> Parse() {
     SearchExpression expr;
 
+    if (HasTopLevelOr()) {
+      auto group = CaptureTopLevelOrGroup();
+      if (!group) {
+        return MakeUnexpected(group.error());
+      }
+      expr.raw_expression = std::move(*group);
+      return expr;
+    }
+
     while (current_.type != TokenType::kEnd) {
       // Handle prefix operators
       if (current_.type == TokenType::kPlus) {
         Advance();
-        if (auto term = ParsePrefixedTerm()) {
-          expr.required_terms.push_back(*term);
+        if (auto operand = ParsePrefixedTerm()) {
+          expr.required_terms.push_back(operand->text);
+          expr.required_is_group.push_back(operand->is_group);
         } else {
           return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Expected term after '+'"));
         }
       } else if (current_.type == TokenType::kMinus) {
         Advance();
-        if (auto term = ParsePrefixedTerm()) {
-          expr.excluded_terms.push_back(*term);
+        if (auto operand = ParsePrefixedTerm()) {
+          expr.excluded_terms.push_back(operand->text);
+          expr.excluded_is_group.push_back(operand->is_group);
         } else {
           return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Expected term after '-'"));
         }
@@ -261,24 +284,13 @@ class Parser {
         }
         expr.raw_expression += paren_expr;
       } else if (current_.type == TokenType::kTerm || current_.type == TokenType::kQuotedTerm) {
-        // Check if this starts an OR expression
-        if (LooksLikeOrExpression()) {
-          auto or_expr = CaptureOrExpression();
-          if (!or_expr) {
-            return MakeUnexpected(or_expr.error());
-          }
-          if (!expr.raw_expression.empty()) {
-            expr.raw_expression += " ";
-          }
-          expr.raw_expression += *or_expr;
-        } else {
-          // Regular term (implicit AND). Stored as plain text regardless of
-          // whether it was quoted -- ToQueryString/SimplifySearchExpression
-          // re-apply wire quoting exactly once, at whichever destination the
-          // term is serialized onto (see wire_quoting.h).
-          expr.required_terms.push_back(current_.value);
-          Advance();
-        }
+        // Implicit AND. Stored as plain text regardless of
+        // whether it was quoted -- ToQueryString/SimplifySearchExpression
+        // re-apply wire quoting exactly once, at whichever destination the
+        // term is serialized onto (see wire_quoting.h).
+        expr.required_terms.push_back(current_.value);
+        expr.required_is_group.push_back(false);
+        Advance();
       } else if (current_.type == TokenType::kOr) {
         return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Unexpected 'OR' operator"));
       } else if (current_.type == TokenType::kRParen) {
@@ -297,71 +309,121 @@ class Parser {
     current_ = tokenizer_.Next();
   }
 
-  std::optional<std::string> ParsePrefixedTerm() {
+  /**
+   * @brief Operand of a unary +/-: plain term text, or a formatted group
+   */
+  struct PrefixedOperand {
+    std::string text;
+    bool is_group = false;
+  };
+
+  std::optional<PrefixedOperand> ParsePrefixedTerm() {
     if (current_.type == TokenType::kLParen) {
       // Parenthesized expression after + or -
       std::string expr = CaptureParenExpression();
-      return expr.empty() ? std::nullopt : std::optional<std::string>(expr);
+      return expr.empty() ? std::nullopt : std::optional<PrefixedOperand>(PrefixedOperand{std::move(expr), true});
     }
-    if (current_.type == TokenType::kTerm) {
-      std::string term = current_.value;
+    if (current_.type == TokenType::kTerm || current_.type == TokenType::kQuotedTerm) {
+      PrefixedOperand operand{current_.value, false};
       Advance();
-      return term;
-    }
-    if (current_.type == TokenType::kQuotedTerm) {
-      std::string term = current_.value;
-      Advance();
-      return term;
+      return operand;
     }
     return std::nullopt;
   }
 
-  bool LooksLikeOrExpression() {
-    // Save current state
-    size_t saved_pos = tokenizer_.GetPosition();
-    Token saved_current = current_;
-    auto saved_last_pos = last_pos_;
+  /**
+   * @brief Whether an OR operator appears outside every parenthesized group
+   */
+  bool HasTopLevelOr() {
+    const size_t saved_pos = tokenizer_.GetPosition();
+    const Token saved_current = current_;
+    const size_t saved_last_pos = last_pos_;
 
-    // Look ahead for OR
-    Advance();  // Skip current term
-    bool has_or = (current_.type == TokenType::kOr);
+    bool found = false;
+    int depth = 0;
+    while (current_.type != TokenType::kEnd && !found) {
+      if (current_.type == TokenType::kLParen) {
+        ++depth;
+      } else if (current_.type == TokenType::kRParen) {
+        --depth;
+      } else if (current_.type == TokenType::kOr && depth <= 0) {
+        found = true;
+      }
+      Advance();
+    }
 
-    // Restore state
     tokenizer_.SetPosition(saved_pos);
     current_ = saved_current;
     last_pos_ = saved_last_pos;
-
-    return has_or;
+    return found;
   }
 
-  Expected<std::string, Error> CaptureOrExpression() {
+  /**
+   * @brief Capture the whole expression as one group when it has a top-level OR
+   *
+   * Implicit AND binds tighter than OR, so "a OR b c" is "a OR (b c)", exactly
+   * what the parenthesized form "(a OR b c)" means to the server grammar.
+   */
+  Expected<std::string, Error> CaptureTopLevelOrGroup() {
     std::ostringstream oss;
+    TokenType previous_type = TokenType::kEnd;
+    bool pending_not = false;
 
-    // Capture first term. Every term (quoted or not) goes through the same
-    // wire-quoting decision as ToQueryString's required/excluded terms, so a
-    // plain word that collides with a reserved keyword (e.g. "order") is
-    // quoted here too instead of reaching the AST parser as a bare operator.
-    oss << detail::QuoteWireToken(current_.value);
-    Advance();
-
-    // Capture OR chain
-    while (current_.type == TokenType::kOr) {
-      oss << " OR ";
-      Advance();
-      if (current_.type == TokenType::kTerm || current_.type == TokenType::kQuotedTerm) {
-        oss << detail::QuoteWireToken(current_.value);
-        Advance();
-      } else if (current_.type == TokenType::kLParen) {
-        std::string paren = CaptureParenExpression();
-        if (paren.empty()) {
-          return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Unbalanced parentheses after 'OR'"));
+    while (current_.type != TokenType::kEnd) {
+      switch (current_.type) {
+        case TokenType::kOr:
+          if (previous_type == TokenType::kEnd || previous_type == TokenType::kOr) {
+            return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Unexpected 'OR' operator"));
+          }
+          pending_not = false;
+          oss << " OR ";
+          previous_type = TokenType::kOr;
+          Advance();
+          break;
+        case TokenType::kPlus:
+        case TokenType::kMinus:
+          if (previous_type == TokenType::kEnd || previous_type == TokenType::kOr) {
+            return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Expected term next to 'OR'"));
+          }
+          pending_not = current_.type == TokenType::kMinus;
+          Advance();
+          break;
+        case TokenType::kRParen:
+          return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Unexpected ')'"));
+        default: {
+          // A term, quoted term or parenthesized group
+          const bool is_group = current_.type == TokenType::kLParen;
+          const TokenType operand_type = current_.type;
+          std::string operand;
+          if (is_group) {
+            operand = CaptureParenExpression();
+            if (operand.empty()) {
+              return MakeUnexpected(MakeError(
+                  ErrorCode::kQuerySyntaxError,
+                  previous_type == TokenType::kOr ? "Unbalanced parentheses after 'OR'" : "Unbalanced parentheses"));
+            }
+          } else {
+            operand = detail::QuoteWireToken(current_.value);
+            Advance();
+          }
+          if (previous_type == TokenType::kTerm || previous_type == TokenType::kQuotedTerm ||
+              previous_type == TokenType::kRParen) {
+            oss << " ";
+          }
+          if (pending_not) {
+            oss << "NOT ";
+            pending_not = false;
+          }
+          oss << operand;
+          previous_type = is_group ? TokenType::kRParen : operand_type;
+          break;
         }
-        oss << paren;
-      } else {
-        return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Expected term after 'OR'"));
       }
     }
 
+    if (previous_type == TokenType::kOr) {
+      return MakeUnexpected(MakeError(ErrorCode::kQuerySyntaxError, "Expected term after 'OR'"));
+    }
     return oss.str();
   }
 
@@ -378,18 +440,27 @@ class Parser {
     // the space it needs before the "NOT" it is about to emit.
     TokenType previous_type = TokenType::kEnd;
     // A bare '-' has no keyword the AST parser recognizes; the server only
-    // understands the literal word NOT (query_ast.cpp). Defer emission
-    // until the term it prefixes arrives, exactly as excluded_terms outside
-    // a group are rendered as "NOT term" in ToQueryString.
+    // understands the literal word NOT (query_ast.cpp). Defer emission to
+    // the very next token: a term or a nested group takes the NOT, anything
+    // else drops it, so it never leaks onto a later term.
     bool pending_not = false;
 
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-do-while) - do-while is appropriate for paren matching
     do {
       if (current_.type == TokenType::kLParen) {
+        if (previous_type == TokenType::kTerm || previous_type == TokenType::kQuotedTerm ||
+            previous_type == TokenType::kRParen) {
+          oss << " ";
+        }
+        if (pending_not) {
+          oss << "NOT ";
+          pending_not = false;
+        }
         ++depth;
         oss << "(";
         previous_type = TokenType::kLParen;
       } else if (current_.type == TokenType::kRParen) {
+        pending_not = false;
         --depth;
         oss << ")";
         previous_type = TokenType::kRParen;
@@ -405,12 +476,14 @@ class Parser {
         oss << detail::QuoteWireToken(current_.value);
         previous_type = current_.type;
       } else if (current_.type == TokenType::kOr) {
+        pending_not = false;
         oss << " OR ";
         previous_type = TokenType::kOr;
       } else if (current_.type == TokenType::kPlus) {
         // No operator meaning inside a group -- adjacent terms are AND'ed
         // by adjacency already, so '+' is dropped rather than glued onto
         // the next term as a raw character the AST tokenizer rejects.
+        pending_not = false;
       } else if (current_.type == TokenType::kMinus) {
         pending_not = true;
       } else if (current_.type == TokenType::kEnd) {
@@ -437,19 +510,19 @@ bool SearchExpression::HasComplexExpression() const {
   if (!raw_expression.empty()) {
     return true;
   }
-  return std::any_of(required_terms.begin(), required_terms.end(), IsParenthesizedSubexpression) ||
-         std::any_of(excluded_terms.begin(), excluded_terms.end(), IsParenthesizedSubexpression);
+  return std::find(required_is_group.begin(), required_is_group.end(), true) != required_is_group.end() ||
+         std::find(excluded_is_group.begin(), excluded_is_group.end(), true) != excluded_is_group.end();
 }
 
 std::string SearchExpression::ToQueryString() const {
   std::ostringstream oss;
 
   // required_terms/excluded_terms mix plain term text with entries that are
-  // already a fully-formatted parenthesized sub-expression (see
-  // IsParenthesizedSubexpression); only the former still needs the shared
-  // wire-quoting decision applied here.
-  const auto emit_term = [](const std::string& term) {
-    return IsParenthesizedSubexpression(term) ? term : detail::QuoteWireToken(term);
+  // already a fully-formatted parenthesized sub-expression (flagged in
+  // required_is_group/excluded_is_group); only the former still needs the
+  // shared wire-quoting decision applied here.
+  const auto emit_term = [](const std::string& term, bool is_group) {
+    return is_group ? term : detail::QuoteWireToken(term);
   };
 
   // Build required terms (AND) - includes all non-prefixed terms
@@ -458,16 +531,16 @@ std::string SearchExpression::ToQueryString() const {
       if (i > 0) {
         oss << " AND ";
       }
-      oss << emit_term(required_terms[i]);
+      oss << emit_term(required_terms[i], IsGroupEntry(required_is_group, i));
     }
   }
 
   // Add excluded terms (NOT)
-  for (const auto& term : excluded_terms) {
+  for (size_t i = 0; i < excluded_terms.size(); ++i) {
     if (!oss.str().empty()) {
       oss << " AND ";
     }
-    oss << "NOT " << emit_term(term);
+    oss << "NOT " << emit_term(excluded_terms[i], IsGroupEntry(excluded_is_group, i));
   }
 
   // Add complex expression (raw) - for OR/parentheses
@@ -478,8 +551,7 @@ std::string SearchExpression::ToQueryString() const {
     oss << "(" << raw_expression << ")";
   }
 
-  // Note: optional_terms is no longer used (kept for backward compatibility)
-  // All terms are now treated as required (implicit AND)
+  // All terms are treated as required (implicit AND)
 
   return oss.str();
 }

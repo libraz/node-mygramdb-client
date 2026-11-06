@@ -19,9 +19,9 @@
 #define SO_NOSIGPIPE 0x1022
 #endif
 
-#include <cctype>
 #include <cstring>
 #include <iomanip>
+#include <locale>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -36,6 +36,9 @@ using namespace mygram::utils;
 namespace mygramdb::client {
 
 namespace {
+
+// Protocol constants alias - reuse of the shared protocol header.
+namespace proto = mygramdb::server::protocol;
 
 // Protocol constants
 constexpr size_t kErrorPrefixLen = 6;    // Length of "ERROR "
@@ -58,98 +61,35 @@ constexpr int kSendFlags = 0;
  * @brief Parse key=value pairs from a whitespace-tokenised string
  *
  * Used for response fragments where the server emits "key=value" tokens
- * separated by whitespace (e.g. GET document filter fields). The value is
- * reversibly escaped per spec/tcp-commands.md §11.1 when it needs to be
- * (empty, containing whitespace, a quote, a backslash or a control
- * character), so a quoted value is decoded rather than split on its spaces.
+ * separated by whitespace (e.g. GET document filter fields). Values are
+ * decoded per spec/tcp-commands.md §11.1 by ParseWireToken, the same decoder
+ * SEARCH primary keys use.
+ *
+ * @return The pairs, or std::nullopt when a quoted value is malformed
  */
-std::vector<std::pair<std::string, std::string>> ParseKeyValuePairs(const std::string& str) {
+std::optional<std::vector<std::pair<std::string, std::string>>> ParseKeyValuePairs(std::string_view str) {
   std::vector<std::pair<std::string, std::string>> pairs;
   size_t pos = 0;
-  auto skip_spaces = [&]() {
-    while (pos < str.size() && std::isspace(static_cast<unsigned char>(str[pos])) != 0) {
+  while (pos < str.size()) {
+    while (pos < str.size() && detail::IsAsciiSpace(static_cast<unsigned char>(str[pos]))) {
       ++pos;
     }
-  };
-  auto hex_value = [](char ch) -> int {
-    if (ch >= '0' && ch <= '9') {
-      return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-      return 10 + (ch - 'a');
-    }
-    if (ch >= 'A' && ch <= 'F') {
-      return 10 + (ch - 'A');
-    }
-    return -1;
-  };
-
-  while (pos < str.size()) {
-    skip_spaces();
     const size_t key_start = pos;
-    while (pos < str.size() && str[pos] != '=' && std::isspace(static_cast<unsigned char>(str[pos])) == 0) {
+    while (pos < str.size() && str[pos] != '=' && !detail::IsAsciiSpace(static_cast<unsigned char>(str[pos]))) {
       ++pos;
     }
     if (pos >= str.size() || str[pos] != '=') {
-      while (pos < str.size() && std::isspace(static_cast<unsigned char>(str[pos])) == 0) {
-        ++pos;
-      }
       continue;
     }
 
-    std::string key = str.substr(key_start, pos - key_start);
+    std::string key(str.substr(key_start, pos - key_start));
     ++pos;  // skip '='
 
     std::string value;
-    if (pos < str.size() && str[pos] == '"') {
-      ++pos;
-      while (pos < str.size()) {
-        char ch = str[pos++];
-        if (ch == '"') {
-          break;
-        }
-        if (ch == '\\' && pos < str.size()) {
-          char escaped = str[pos++];
-          switch (escaped) {
-            case 'n':
-              value.push_back('\n');
-              break;
-            case 'r':
-              value.push_back('\r');
-              break;
-            case 't':
-              value.push_back('\t');
-              break;
-            case '\\':
-            case '"':
-              value.push_back(escaped);
-              break;
-            case 'x':
-              if (pos + 1 < str.size()) {
-                const int high = hex_value(str[pos]);
-                const int low = hex_value(str[pos + 1]);
-                if (high >= 0 && low >= 0) {
-                  value.push_back(static_cast<char>((high << 4) | low));
-                  pos += 2;
-                  break;
-                }
-              }
-              value.push_back('x');
-              break;
-            default:
-              value.push_back(escaped);
-              break;
-          }
-        } else {
-          value.push_back(ch);
-        }
-      }
-    } else {
-      const size_t value_start = pos;
-      while (pos < str.size() && std::isspace(static_cast<unsigned char>(str[pos])) == 0) {
-        ++pos;
-      }
-      value = str.substr(value_start, pos - value_start);
+    // An empty value is always quoted on the wire, so a bare '=' before whitespace is an empty bare token.
+    if (pos < str.size() && !detail::IsAsciiSpace(static_cast<unsigned char>(str[pos])) &&
+        !detail::ParseWireToken(str, pos, value)) {
+      return std::nullopt;
     }
 
     if (!key.empty()) {
@@ -212,7 +152,7 @@ std::optional<DebugInfo> ParseDebugInfo(const std::vector<std::string>& tokens, 
  */
 std::optional<std::string> ValidateNoControlCharacters(const std::string& value, const char* field_name) {
   for (unsigned char character : value) {
-    if (std::iscntrl(character) != 0) {
+    if (detail::IsAsciiControl(character)) {
       std::ostringstream oss;
       oss << "Input for " << field_name << " contains control character 0x" << std::uppercase << std::hex
           << std::setw(2) << std::setfill('0') << static_cast<int>(character) << ", which is not allowed";
@@ -238,67 +178,10 @@ std::string EscapeQueryString(const std::string& str) {
   return detail::QuoteWireToken(str);
 }
 
-constexpr std::string_view kHighlightKeyword = "HIGHLIGHT";
-
-std::string ToAsciiUpper(std::string_view value) {
-  std::string result(value);
-  for (char& ch : result) {
-    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-  }
-  return result;
-}
-
-std::string_view TrimAsciiWhitespace(std::string_view value) {
-  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
-    value.remove_prefix(1);
-  }
-  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
-    value.remove_suffix(1);
-  }
-  return value;
-}
-
-/**
- * @brief Check whether a command's HIGHLIGHT clause, if any, is real
- *
- * HIGHLIGHT is a case-insensitive clause keyword recognized as a bare,
- * whitespace-delimited token. EscapeQueryString quotes any query/AND/NOT/
- * FILTER value that collides with it, so an unquoted HIGHLIGHT token in the
- * command text can only be the real clause. Used to tell IsResponseComplete
- * a SEARCH/COUNT reply cannot end at its header line.
- */
-bool CommandRequestsHighlight(std::string_view command) {
-  size_t pos = 0;
-  while (pos < command.size()) {
-    size_t start = command.find_first_not_of(" \t", pos);
-    if (start == std::string_view::npos) {
-      break;
-    }
-    size_t end = command.find_first_of(" \t", start);
-    std::string_view token =
-        command.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
-    if (token.size() == kHighlightKeyword.size() && ToAsciiUpper(token) == kHighlightKeyword) {
-      return true;
-    }
-    if (end == std::string_view::npos) {
-      break;
-    }
-    pos = end;
-  }
-  return false;
-}
-
-/**
- * @brief Check whether a command is SEARCH or COUNT
- *
- * Only these two produce an "OK RESULTS"/"OK COUNT" header that a trailing
- * DEBUG block can follow; every other command's single-line reply is
- * genuinely done at its first \r\n regardless of the connection's debug flag.
- */
-bool IsSearchOrCountCommand(std::string_view command) {
-  const size_t verb_end = command.find_first_of(" \t");
-  const std::string verb = ToAsciiUpper(command.substr(0, verb_end));
-  return verb == "SEARCH" || verb == "COUNT";
+std::ostringstream MakeProtocolCommandStream() {
+  std::ostringstream command;
+  command.imbue(std::locale::classic());
+  return command;
 }
 
 }  // namespace
@@ -387,6 +270,33 @@ class MygramClient::Impl {
 
   [[nodiscard]] bool IsConnected() const { return sock_ >= 0; }
 
+  /**
+   * Send a command under a deadline of its own. The socket's send/receive
+   * timeouts are switched for this command and restored afterwards; 0 keeps
+   * the configured timeout.
+   */
+  Expected<std::string, Error> SendCommand(const std::string& command, uint32_t timeout_ms) const {
+    if (timeout_ms == 0 || !IsConnected()) {
+      return SendCommand(command);
+    }
+    ApplySocketTimeout(timeout_ms);
+    auto result = SendCommand(command);
+    ApplySocketTimeout(config_.timeout_ms);
+    return result;
+  }
+
+  void ApplySocketTimeout(uint32_t timeout_ms) const {
+    if (sock_ < 0) {
+      return;
+    }
+    struct timeval timeout_val = {};
+    timeout_val.tv_sec = static_cast<decltype(timeout_val.tv_sec)>(timeout_ms / kMillisecondsPerSecond);
+    timeout_val.tv_usec =
+        static_cast<decltype(timeout_val.tv_usec)>((timeout_ms % kMillisecondsPerSecond) * kMicrosecondsPerMillisecond);
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &timeout_val, sizeof(timeout_val));
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &timeout_val, sizeof(timeout_val));
+  }
+
   Expected<std::string, Error> SendCommand(const std::string& command) const {
     if (!IsConnected()) {
       return MakeUnexpected(MakeError(ErrorCode::kClientNotConnected, "Not connected"));
@@ -402,18 +312,10 @@ class MygramClient::Impl {
           MakeError(ErrorCode::kClientCommandFailed, std::string("Failed to send command: ") + strerror(errno)));
     }
 
-    // A SEARCH/COUNT reply's header line reads identically whether or not a
-    // highlight/debug body follows it, so IsResponseComplete needs to be
-    // told up front when this command's reply cannot end at that header.
-    // Every command reaching this method is a raw string built by the
-    // TypeScript layer (command-builder.ts / literal 'DEBUG ON' etc.), so
-    // the completion decision has to be derived from the command text
-    // itself rather than from a typed request the way the typed Search()/
-    // Count() methods above build it.
-    const bool is_search_or_count = IsSearchOrCountCommand(command);
-    detail::ResponseCompletionState completion_state;
-    completion_state.expect_multiline_tail = is_search_or_count && (debug_mode_ || CommandRequestsHighlight(command));
-    completion_state.expect_debug_marker = is_search_or_count && debug_mode_;
+    // The reply framing depends on the command text (SEARCH/COUNT with
+    // HIGHLIGHT or DEBUG, FACET, CONFIG HELP, ...), so every raw command
+    // string built by the TypeScript layer is classified here.
+    detail::ResponseFrameState frame = detail::BeginResponseFrame(command, debug_mode_);
 
     // Receive response (loop until a complete protocol frame is received).
     std::string response;
@@ -431,27 +333,22 @@ class MygramClient::Impl {
 
       response.append(buffer.data(), static_cast<size_t>(received));
 
-      if (detail::IsResponseComplete(response, completion_state)) {
+      if (detail::IsResponseComplete(response, frame)) {
         break;
       }
     }
 
-    // A raw "DEBUG ON"/"DEBUG OFF" command (sent directly or via
-    // EnableDebug()/DisableDebug()) that the server accepted: track the flag
-    // so the next SEARCH/COUNT on this connection knows to expect a trailing
-    // debug block.
-    const std::string upper_command = ToAsciiUpper(TrimAsciiWhitespace(command));
-    if (response.compare(0, 5, "ERROR") != 0) {
-      if (upper_command == "DEBUG ON") {
-        debug_mode_ = true;
-      } else if (upper_command == "DEBUG OFF") {
-        debug_mode_ = false;
-      }
-    }
+    response.erase(0, frame.frame_start);
 
     // Remove trailing \r\n
     while (!response.empty() && (response.back() == '\n' || response.back() == '\r')) {
       response.pop_back();
+    }
+
+    // Mirror the server's per-connection DEBUG flag from the reply itself, so
+    // DEBUG ON/OFF sent through any API frames the next SEARCH/COUNT correctly.
+    if (response == proto::kOkDebugOn || response == proto::kOkDebugOff) {
+      debug_mode_ = response == proto::kOkDebugOn;
     }
 
     return response;
@@ -493,7 +390,7 @@ class MygramClient::Impl {
     }
 
     // Build command
-    std::ostringstream cmd;
+    auto cmd = MakeProtocolCommandStream();
     cmd << "SEARCH " << table << " " << EscapeQueryString(query);
 
     for (const auto& term : and_terms) {
@@ -564,7 +461,16 @@ class MygramClient::Impl {
     {
       size_t pos = 0;
       std::string token;
-      while (detail::ParseWireToken(rest, pos, token)) {
+      while (true) {
+        while (pos < rest.size() && detail::IsAsciiSpace(static_cast<unsigned char>(rest[pos]))) {
+          ++pos;
+        }
+        if (pos >= rest.size()) {
+          break;
+        }
+        if (!detail::ParseWireToken(rest, pos, token)) {
+          return MakeUnexpected(MakeError(ErrorCode::kClientProtocolError, "Malformed SEARCH primary key"));
+        }
         tokens.push_back(token);
       }
     }
@@ -621,7 +527,7 @@ class MygramClient::Impl {
     }
 
     // Build command
-    std::ostringstream cmd;
+    auto cmd = MakeProtocolCommandStream();
     cmd << "COUNT " << table << " " << EscapeQueryString(query);
 
     for (const auto& term : and_terms) {
@@ -682,7 +588,7 @@ class MygramClient::Impl {
       return MakeUnexpected(MakeError(ErrorCode::kClientInvalidArgument, *err));
     }
 
-    std::ostringstream cmd;
+    auto cmd = MakeProtocolCommandStream();
     cmd << "GET " << table << " " << EscapeQueryString(primary_key);
 
     auto result = SendCommand(cmd.str());
@@ -715,7 +621,11 @@ class MygramClient::Impl {
     Document doc(doc_pk);
 
     // Parse remaining key=value pairs
-    doc.fields = ParseKeyValuePairs(response.substr(response_pos));
+    auto fields = ParseKeyValuePairs(std::string_view(response).substr(response_pos));
+    if (!fields) {
+      return MakeUnexpected(MakeError(ErrorCode::kClientProtocolError, "Malformed GET field value"));
+    }
+    doc.fields = std::move(*fields);
 
     return doc;
   }
@@ -874,7 +784,10 @@ class MygramClient::Impl {
     status.status_str = response;
 
     auto pairs = ParseKeyValuePairs(response);
-    for (const auto& [key, value] : pairs) {
+    if (!pairs) {
+      return MakeUnexpected(MakeError(ErrorCode::kClientProtocolError, "Malformed REPLICATION STATUS value"));
+    }
+    for (const auto& [key, value] : *pairs) {
       if (key == "status") {
         status.running = (value == "running");
       } else if (key == "gtid") {
@@ -1029,8 +942,9 @@ mygram::utils::Expected<void, mygram::utils::Error> MygramClient::DisableDebug()
   return impl_->DisableDebug();
 }
 
-mygram::utils::Expected<std::string, mygram::utils::Error> MygramClient::SendCommand(const std::string& command) const {
-  return impl_->SendCommand(command);
+mygram::utils::Expected<std::string, mygram::utils::Error> MygramClient::SendCommand(const std::string& command,
+                                                                                     uint32_t timeout_ms) const {
+  return impl_->SendCommand(command, timeout_ms);
 }
 
 }  // namespace mygramdb::client

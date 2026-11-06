@@ -426,11 +426,16 @@ int mygramclient_debug_off(MygramClient_C* client) {
 }
 
 int mygramclient_send_command(MygramClient_C* client, const char* command, char** response) {
+  return mygramclient_send_command_timeout(client, command, 0, response);
+}
+
+int mygramclient_send_command_timeout(MygramClient_C* client, const char* command, uint32_t timeout_ms,
+                                      char** response) {
   if (client == nullptr || client->client == nullptr || command == nullptr || response == nullptr) {
     return -1;
   }
 
-  auto result = client->client->SendCommand(command);
+  auto result = client->client->SendCommand(command, timeout_ms);
   if (!result) {
     client->last_error = result.error().to_string();
     return -1;
@@ -496,12 +501,6 @@ int mygramclient_parse_search_expression(const char* expression, MygramParsedExp
     return -1;
   }
 
-  // Also parse to get optional terms
-  auto expr_result = ParseSearchExpression(expression);
-  if (!expr_result) {
-    return -1;
-  }
-
   // Allocate result
   auto* result = static_cast<MygramParsedExpression_C*>(malloc(sizeof(MygramParsedExpression_C)));
   if (result == nullptr) {
@@ -519,10 +518,6 @@ int mygramclient_parse_search_expression(const char* expression, MygramParsedExp
   result->not_count = not_terms.size();
   result->not_terms = string_vector_to_c_array(not_terms);
 
-  // Copy optional terms
-  result->optional_count = expr_result->optional_terms.size();
-  result->optional_terms = string_vector_to_c_array(expr_result->optional_terms);
-
   *parsed = result;
   return 0;
 }
@@ -535,7 +530,6 @@ void mygramclient_free_parsed_expression(MygramParsedExpression_C* parsed) {
   free(parsed->main_term);
   free_c_string_array(parsed->and_terms, parsed->and_count);
   free_c_string_array(parsed->not_terms, parsed->not_count);
-  free_c_string_array(parsed->optional_terms, parsed->optional_count);
   free(parsed);
 }
 

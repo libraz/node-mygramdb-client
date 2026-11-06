@@ -332,12 +332,12 @@ static napi_value GetLastError(napi_env env, napi_callback_info info) {
  * @returns {string} Response from server
  */
 static napi_value SendCommand(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2];
+  size_t argc = 3;
+  napi_value args[3];
   NAPI_CALL(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
 
   if (argc < 2) {
-    ThrowError(env, "Expected 2 arguments: client, command");
+    ThrowError(env, "Expected arguments: client, command[, timeoutMs]");
     return nullptr;
   }
 
@@ -350,9 +350,19 @@ static napi_value SendCommand(napi_env env, napi_callback_info info) {
   size_t command_len;
   NAPI_CALL(env, napi_get_value_string_utf8(env, args[1], command, sizeof(command), &command_len));
 
+  // Optional per-command deadline in milliseconds
+  uint32_t timeout_ms = 0;
+  if (argc >= 3) {
+    napi_valuetype timeout_type;
+    NAPI_CALL(env, napi_typeof(env, args[2], &timeout_type));
+    if (timeout_type == napi_number) {
+      NAPI_CALL(env, napi_get_value_uint32(env, args[2], &timeout_ms));
+    }
+  }
+
   // Send command
   char* response = nullptr;
-  int rc = mygramclient_send_command(client, command, &response);
+  int rc = mygramclient_send_command_timeout(client, command, timeout_ms, &response);
 
   if (rc != 0) {
     const char* error = mygramclient_get_last_error(client);
@@ -444,7 +454,7 @@ static napi_value SimplifySearchExpressionWrapper(napi_env env, napi_callback_in
  * Parse web-style search expression
  *
  * @param {string} expression - Search expression (e.g., "+golang -old tutorial")
- * @returns {Object} Parsed expression with mainTerm, andTerms, notTerms, optionalTerms
+ * @returns {Object} Parsed expression with mainTerm, andTerms, notTerms
  */
 static napi_value ParseSearchExpressionWrapper(napi_env env, napi_callback_info info) {
   size_t argc = 1;
@@ -507,16 +517,6 @@ static napi_value ParseSearchExpressionWrapper(napi_env env, napi_callback_info 
     NAPI_CALL(env, napi_set_element(env, not_terms_array, static_cast<uint32_t>(i), term_val));
   }
   NAPI_CALL(env, napi_set_named_property(env, ret_obj, "notTerms", not_terms_array));
-
-  // Add optionalTerms array
-  napi_value optional_terms_array;
-  NAPI_CALL(env, napi_create_array_with_length(env, parsed->optional_count, &optional_terms_array));
-  for (size_t i = 0; i < parsed->optional_count; i++) {
-    napi_value term_val;
-    NAPI_CALL(env, napi_create_string_utf8(env, parsed->optional_terms[i], NAPI_AUTO_LENGTH, &term_val));
-    NAPI_CALL(env, napi_set_element(env, optional_terms_array, static_cast<uint32_t>(i), term_val));
-  }
-  NAPI_CALL(env, napi_set_named_property(env, ret_obj, "optionalTerms", optional_terms_array));
 
   // Free parsed expression
   mygramclient_free_parsed_expression(parsed);

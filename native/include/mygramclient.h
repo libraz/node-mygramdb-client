@@ -287,9 +287,11 @@ class MygramClient {
    * Most users should use the higher-level methods instead.
    *
    * @param command Command string (without \r\n terminator)
+   * @param timeout_ms Deadline for this command in milliseconds; 0 uses the configured timeout
    * @return Expected<std::string, Error>
    */
-  mygram::utils::Expected<std::string, mygram::utils::Error> SendCommand(const std::string& command) const;
+  mygram::utils::Expected<std::string, mygram::utils::Error> SendCommand(const std::string& command,
+                                                                         uint32_t timeout_ms = 0) const;
 
  private:
   class Impl;  // Forward declaration for PIMPL
