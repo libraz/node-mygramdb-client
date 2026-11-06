@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-06
+
 Tracks MygramDB **v1.12.0**, covering the client-facing changes of v1.11.0 and
 v1.11.1: per-command reply framing, quoting by Unicode `White_Space`, and a
 stricter web-syntax expression parser. The e2e docker stack defaults to the
@@ -28,6 +30,13 @@ stricter web-syntax expression parser. The e2e docker stack defaults to the
 - **Wire quoting follows Unicode `White_Space`.** U+0085 is quoted as
   whitespace and U+200B is not. The reserved-keyword check folds ASCII letters
   only.
+- **`examples/search-expression.ts`** no longer prints the removed
+  `optionalTerms`.
+
+### Added
+
+- **`ConfigUnknownVariable` (1008) and `ConfigVariableNotMutable` (1009)** are
+  named error codes in the error taxonomy.
 
 ### Fixed
 
@@ -47,7 +56,12 @@ stricter web-syntax expression parser. The e2e docker stack defaults to the
   correctly, and the flag is cleared whenever the socket closes.
 - **`sendCommand()` gives `OPTIMIZE`, `DUMP LOAD` and `DUMP VERIFY` their
   long-operation deadline** however the keywords are cased or spaced, on both
-  the JavaScript and the native transport.
+  the JavaScript and the native transport. The native transport now honours
+  `optimizeTimeout` and the `dump*Timeout` options.
+- **Names containing Unicode whitespace are rejected** for tables, filter keys,
+  sort columns, facet columns and `SET` variables before either transport sends
+  them, and `GET` / `SEARCH` values and primary keys that are malformed are
+  rejected instead of being decoded leniently.
 - **The native transport honours `optimizeTimeout`, `dumpSaveTimeout`,
   `dumpLoadTimeout` and `dumpVerifyTimeout`.** They were accepted but ignored,
   so every native command ran under the single request timeout.
@@ -440,6 +454,8 @@ existing single-database, single-token usage produces byte-identical commands.
 - Input validation and error handling
 - TypeScript type definitions
 
+[Unreleased]: https://github.com/libraz/node-mygramdb-client/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/libraz/node-mygramdb-client/compare/v1.3.0...v1.4.0
