@@ -95,7 +95,6 @@ describe('Search Expression Parsing', () => {
 
       // Unprefixed terms are required: the expression means an implicit AND.
       expect(result.requiredTerms).toEqual(['hello', 'world']);
-      expect(result.optionalTerms).toEqual([]);
       expect(result.excludedTerms).toEqual([]);
     });
 
@@ -103,7 +102,6 @@ describe('Search Expression Parsing', () => {
       const result = parseSearchExpression('+required1 +required2');
 
       expect(result.requiredTerms).toEqual(['required1', 'required2']);
-      expect(result.optionalTerms).toEqual([]);
     });
 
     it('should parse excluded terms with -', () => {

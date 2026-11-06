@@ -16,6 +16,7 @@
  * - `"machine learning" tutorial` → `"machine learning" AND tutorial` (phrase search)
  * - `golang -old` → `golang AND NOT old`
  * - `python OR ruby` → `(python OR ruby)`
+ * - `a OR b c` → `(a OR b c)` (an expression with a top-level OR is one group; implicit AND binds tighter)
  * - `golang +(tutorial OR guide)` → `golang AND (tutorial OR guide)`
  * - `hello world` → `hello AND world` (full-width space supported)
  */
@@ -24,13 +25,15 @@
  * Parsed search expression components
  */
 export interface SearchExpression {
-  /** Terms with + prefix (AND) */
+  /** Terms with + prefix, and unprefixed terms (implicit AND) */
   requiredTerms: string[];
   /** Terms with - prefix (NOT) */
   excludedTerms: string[];
-  /** Terms without prefix */
-  optionalTerms: string[];
-  /** Original expression for OR/grouping */
+  /** Parallel to `requiredTerms`: the entry is a formatted `(...)` group, not plain term text */
+  requiredIsGroup: boolean[];
+  /** Parallel to `excludedTerms`: the entry is a formatted `(...)` group, not plain term text */
+  excludedIsGroup: boolean[];
+  /** Formatted AST-syntax text for a bare OR/grouped sub-expression */
   rawExpression: string;
 }
 
@@ -41,6 +44,15 @@ import { quoteWireToken } from './command-utils.js';
 // createRequire accepts either an absolute path or a file URL string, so the
 // CJS bundle can base it on __filename and the ESM bundle on import.meta.url.
 const nativeRequire = createRequire(typeof __filename !== 'undefined' ? __filename : import.meta.url);
+
+/** ASCII whitespace (0x09-0x0D, 0x20), the only whitespace that separates terms. */
+const ASCII_SPACE = /[\t\n\v\f\r ]/;
+
+/** Characters that end an unquoted word. */
+const WORD_END = /[\t\n\v\f\r ()"]/;
+
+/** The OR operator, matched case-insensitively over ASCII letters only. */
+const OPERATOR_OR = /^[oO][rR]$/;
 
 /**
  * Token types for expression parsing
@@ -71,9 +83,9 @@ class Tokenizer {
   private tokens: Token[];
 
   constructor(input: string) {
-    // Normalize full-width spaces to half-width (U+3000)
-
-    this.input = input.replace(/　/g, ' ');
+    // Normalize full-width spaces to half-width (U+3000). Every other
+    // non-ASCII space stays inside its term, as in the server's tokenizer.
+    this.input = input.replace(/\u3000/g, ' ');
     this.position = 0;
     this.tokens = [];
   }
@@ -109,7 +121,7 @@ class Tokenizer {
   }
 
   private skipWhitespace(): void {
-    while (this.position < this.input.length && /\s/.test(this.input[this.position])) {
+    while (this.position < this.input.length && ASCII_SPACE.test(this.input[this.position])) {
       this.position += 1;
     }
   }
@@ -139,12 +151,12 @@ class Tokenizer {
     // '+' and '-' are unary operators only when tokenize()'s dispatch sees
     // them at a token boundary. Once a word has started they are ordinary
     // text, as in "COVID-19", "e-mail", and "C++".
-    while (this.position < this.input.length && !/[\s()"]/.test(this.input[this.position])) {
+    while (this.position < this.input.length && !WORD_END.test(this.input[this.position])) {
       value += this.input[this.position];
       this.position += 1;
     }
 
-    if (value.toUpperCase() === 'OR') {
+    if (OPERATOR_OR.test(value)) {
       this.tokens.push({ type: TokenType.OR, value: 'OR', position: start });
     } else {
       this.tokens.push({ type: TokenType.WORD, value, position: start });
@@ -171,12 +183,13 @@ export function parseSearchExpression(expression: string): SearchExpression {
   const result: SearchExpression = {
     requiredTerms: [],
     excludedTerms: [],
-    optionalTerms: [],
+    requiredIsGroup: [],
+    excludedIsGroup: [],
     rawExpression: ''
   };
 
   let index = 0;
-  const peek = (offset = 0): Token => tokens[Math.min(index + offset, tokens.length - 1)];
+  const peek = (): Token => tokens[Math.min(index, tokens.length - 1)];
   // A term destined for requiredTerms/excludedTerms is stored as plain text
   // regardless of whether it was quoted -- toQueryString/simplifySearchExpression
   // re-apply wire quoting exactly once, at whichever destination the term is
@@ -189,14 +202,15 @@ export function parseSearchExpression(expression: string): SearchExpression {
   const appendRaw = (fragment: string): void => {
     result.rawExpression = result.rawExpression === '' ? fragment : `${result.rawExpression} ${fragment}`;
   };
+  const isTermToken = (type: TokenType): boolean => type === TokenType.WORD || type === TokenType.QUOTED;
 
   /**
    * Consume a balanced parenthesized group and render it back as a query
    * sub-expression. Adjacent terms are AND'ed by adjacency already, so `+`
    * carries no operator meaning inside a group and is dropped; a bare `-`
    * has no keyword the AST parser recognizes (only the literal word NOT
-   * does), so it is deferred and emitted as "NOT " before the term it
-   * prefixes.
+   * does), so it is deferred to the very next token: a term or a nested group
+   * takes the "NOT ", anything else drops it.
    */
   const captureParenExpression = (): string => {
     let depth = 0;
@@ -207,24 +221,33 @@ export function parseSearchExpression(expression: string): SearchExpression {
     // needs before the "NOT" it is about to emit.
     let previous: TokenType = TokenType.EOF;
     let pendingNot = false;
+    const separate = (): void => {
+      if (previous === TokenType.WORD || previous === TokenType.QUOTED || previous === TokenType.RPAREN) {
+        out += ' ';
+      }
+    };
     do {
       const token = peek();
       switch (token.type) {
         case TokenType.LPAREN:
+          separate();
+          if (pendingNot) {
+            out += 'NOT ';
+            pendingNot = false;
+          }
           depth += 1;
           out += '(';
           previous = token.type;
           break;
         case TokenType.RPAREN:
+          pendingNot = false;
           depth -= 1;
           out += ')';
           previous = token.type;
           break;
         case TokenType.WORD:
         case TokenType.QUOTED:
-          if (previous === TokenType.WORD || previous === TokenType.QUOTED || previous === TokenType.RPAREN) {
-            out += ' ';
-          }
+          separate();
           if (pendingNot) {
             out += 'NOT ';
             pendingNot = false;
@@ -233,11 +256,13 @@ export function parseSearchExpression(expression: string): SearchExpression {
           previous = token.type;
           break;
         case TokenType.OR:
+          pendingNot = false;
           out += ' OR ';
           previous = token.type;
           break;
         case TokenType.PLUS:
           // No operator meaning inside a group; previous is left unchanged.
+          pendingNot = false;
           break;
         case TokenType.MINUS:
           pendingNot = true;
@@ -251,63 +276,121 @@ export function parseSearchExpression(expression: string): SearchExpression {
     return out;
   };
 
-  /** Consume a term and every `OR <term>` that follows it. */
-  const captureOrExpression = (): string => {
-    let out = wireTerm(peek());
-    index += 1;
-    while (peek().type === TokenType.OR) {
-      out += ' OR ';
-      index += 1;
-      const token = peek();
-      if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
-        out += wireTerm(token);
-        index += 1;
-      } else if (token.type === TokenType.LPAREN) {
-        out += captureParenExpression();
-      } else {
-        throw new Error(`Expected term after 'OR' at position ${token.position}`);
+  /** Whether an OR operator appears outside every parenthesized group. */
+  const hasTopLevelOr = (): boolean => {
+    let depth = 0;
+    for (let i = index; i < tokens.length; i += 1) {
+      const { type } = tokens[i];
+      if (type === TokenType.LPAREN) {
+        depth += 1;
+      } else if (type === TokenType.RPAREN) {
+        depth -= 1;
+      } else if (type === TokenType.OR && depth <= 0) {
+        return true;
       }
+    }
+    return false;
+  };
+
+  /**
+   * Capture the whole expression as one group. Implicit AND binds tighter than
+   * OR, so "a OR b c" is "a OR (b c)", exactly what the parenthesized form
+   * "(a OR b c)" means to the server grammar.
+   */
+  const captureTopLevelOrGroup = (): string => {
+    let out = '';
+    let previous: TokenType = TokenType.EOF;
+    let pendingNot = false;
+    while (peek().type !== TokenType.EOF) {
+      const token = peek();
+      switch (token.type) {
+        case TokenType.OR:
+          if (previous === TokenType.EOF || previous === TokenType.OR) {
+            throw new Error(`Unexpected 'OR' operator at position ${token.position}`);
+          }
+          pendingNot = false;
+          out += ' OR ';
+          previous = TokenType.OR;
+          index += 1;
+          break;
+        case TokenType.PLUS:
+        case TokenType.MINUS:
+          if (previous === TokenType.EOF || previous === TokenType.OR) {
+            throw new Error(`Expected term next to 'OR' at position ${token.position}`);
+          }
+          pendingNot = token.type === TokenType.MINUS;
+          index += 1;
+          break;
+        case TokenType.RPAREN:
+          throw new Error(`Unexpected ')' at position ${token.position}`);
+        default: {
+          // A term, quoted term or parenthesized group
+          const isGroup = token.type === TokenType.LPAREN;
+          const operand = isGroup ? captureParenExpression() : wireTerm(token);
+          if (!isGroup) index += 1;
+          if (previous === TokenType.WORD || previous === TokenType.QUOTED || previous === TokenType.RPAREN) {
+            out += ' ';
+          }
+          if (pendingNot) {
+            out += 'NOT ';
+            pendingNot = false;
+          }
+          out += operand;
+          previous = isGroup ? TokenType.RPAREN : token.type;
+          break;
+        }
+      }
+    }
+    if (previous === TokenType.OR) {
+      throw new Error(`Expected term after 'OR' at position ${peek().position}`);
     }
     return out;
   };
 
   /** Consume the operand of a `+` / `-` prefix, which may be a whole group. */
-  const parsePrefixedTerm = (prefix: string): string => {
+  const parsePrefixedTerm = (prefix: string): { text: string; isGroup: boolean } => {
     const token = peek();
     if (token.type === TokenType.LPAREN) {
-      return captureParenExpression();
+      return { text: captureParenExpression(), isGroup: true };
     }
-    if (token.type === TokenType.WORD || token.type === TokenType.QUOTED) {
+    if (isTermToken(token.type)) {
       index += 1;
-      return token.value;
+      return { text: token.value, isGroup: false };
     }
     throw new Error(`Expected term after '${prefix}' at position ${token.position}`);
   };
 
+  if (hasTopLevelOr()) {
+    result.rawExpression = captureTopLevelOrGroup();
+    return result;
+  }
+
   while (peek().type !== TokenType.EOF) {
     const token = peek();
     switch (token.type) {
-      case TokenType.PLUS:
+      case TokenType.PLUS: {
         index += 1;
-        result.requiredTerms.push(parsePrefixedTerm('+'));
+        const operand = parsePrefixedTerm('+');
+        result.requiredTerms.push(operand.text);
+        result.requiredIsGroup.push(operand.isGroup);
         break;
-      case TokenType.MINUS:
+      }
+      case TokenType.MINUS: {
         index += 1;
-        result.excludedTerms.push(parsePrefixedTerm('-'));
+        const operand = parsePrefixedTerm('-');
+        result.excludedTerms.push(operand.text);
+        result.excludedIsGroup.push(operand.isGroup);
         break;
+      }
       case TokenType.LPAREN:
         appendRaw(captureParenExpression());
         break;
       case TokenType.WORD:
       case TokenType.QUOTED:
-        // A term followed by OR opens a raw sub-expression; anything else is a
-        // plain term, and plain terms combine with implicit AND.
-        if (peek(1).type === TokenType.OR) {
-          appendRaw(captureOrExpression());
-        } else {
-          result.requiredTerms.push(token.value);
-          index += 1;
-        }
+        // Plain terms combine with implicit AND.
+        result.requiredTerms.push(token.value);
+        result.requiredIsGroup.push(false);
+        index += 1;
         break;
       case TokenType.OR:
         throw new Error(`Unexpected 'OR' operator at position ${token.position}`);
@@ -322,15 +405,9 @@ export function parseSearchExpression(expression: string): SearchExpression {
   return result;
 }
 
-/**
- * Check whether a required/excluded term is a parenthesized sub-expression
- * (a group captured after a unary `+`/`-`), already formatted AST-syntax
- * text rather than a plain term still needing {@link quoteWireToken}.
- * Detected structurally, never by scanning for an "OR" substring inside a
- * token, which would misclassify ordinary words such as ORDER and ORANGE.
- */
-function isParenthesizedSubexpression(term: string): boolean {
-  return term.length >= 2 && term.startsWith('(') && term.endsWith(')');
+/** Whether entry `index` of a term list is a formatted group; a missing flag means plain text. */
+function isGroupEntry(flags: boolean[], index: number): boolean {
+  return flags[index] === true;
 }
 
 /**
@@ -343,7 +420,7 @@ export function hasComplexExpression(expr: SearchExpression): boolean {
   if (expr.rawExpression.length > 0) {
     return true;
   }
-  return expr.requiredTerms.some(isParenthesizedSubexpression) || expr.excludedTerms.some(isParenthesizedSubexpression);
+  return expr.requiredIsGroup.includes(true) || expr.excludedIsGroup.includes(true);
 }
 
 /**
@@ -355,8 +432,8 @@ export function hasComplexExpression(expr: SearchExpression): boolean {
  * - The raw OR/grouped sub-expression parenthesized and appended
  *
  * `requiredTerms`/`excludedTerms` mix plain term text with entries that are
- * already a fully-formatted parenthesized sub-expression (see
- * {@link isParenthesizedSubexpression}); only the former still needs
+ * already a fully-formatted parenthesized sub-expression (flagged in
+ * `requiredIsGroup`/`excludedIsGroup`); only the former still needs
  * {@link quoteWireToken} applied here, mirroring the C++ client's
  * `ToQueryString`.
  *
@@ -364,13 +441,10 @@ export function hasComplexExpression(expr: SearchExpression): boolean {
  * @returns {string} Query string compatible with QueryASTParser
  */
 export function toQueryString(expr: SearchExpression): string {
-  const emitTerm = (term: string): string => (isParenthesizedSubexpression(term) ? term : quoteWireToken(term));
+  const emitTerm = (term: string, isGroup: boolean): string => (isGroup ? term : quoteWireToken(term));
 
-  // `optionalTerms` is never populated by the parser and is kept only so an
-  // externally built expression object still round-trips. Terms placed there
-  // are required, exactly like the parser's own output.
-  const parts: string[] = [...expr.requiredTerms, ...expr.optionalTerms].map(emitTerm);
-  parts.push(...expr.excludedTerms.map((term) => `NOT ${emitTerm(term)}`));
+  const parts: string[] = expr.requiredTerms.map((term, i) => emitTerm(term, isGroupEntry(expr.requiredIsGroup, i)));
+  parts.push(...expr.excludedTerms.map((term, i) => `NOT ${emitTerm(term, isGroupEntry(expr.excludedIsGroup, i))}`));
 
   if (expr.rawExpression !== '') {
     parts.push(`(${expr.rawExpression})`);
@@ -452,10 +526,9 @@ function simplifyParsedExpression(expr: SearchExpression): {
   }
 
   // hasComplexExpression already ruled out a non-empty rawExpression above,
-  // so any positive term here is plain text in requiredTerms/optionalTerms.
-  const allPositive = [...expr.requiredTerms, ...expr.optionalTerms];
-  if (allPositive.length > 0) {
-    return { mainTerm: allPositive[0], andTerms: allPositive.slice(1) };
+  // so every required term here is plain text.
+  if (expr.requiredTerms.length > 0) {
+    return { mainTerm: expr.requiredTerms[0], andTerms: expr.requiredTerms.slice(1) };
   }
 
   throw new Error('Search expression must have at least one positive term');
@@ -469,7 +542,6 @@ interface NativeBinding {
     mainTerm: string;
     andTerms: string[];
     notTerms: string[];
-    optionalTerms: string[];
   };
 }
 
@@ -492,14 +564,13 @@ function isNativeBinding(binding: unknown): binding is NativeBinding {
  * Falls back to JavaScript implementation if native binding is not available.
  *
  * @param {string} expression - Web-style search expression
- * @returns {{ mainTerm: string, andTerms: string[], notTerms: string[], optionalTerms: string[] }} Parsed expression
+ * @returns {{ mainTerm: string, andTerms: string[], notTerms: string[] }} Parsed expression
  * @throws {Error} If expression is invalid
  */
 export function parseSearchExpressionNative(expression: string): {
   mainTerm: string;
   andTerms: string[];
   notTerms: string[];
-  optionalTerms: string[];
 } {
   try {
     // Try to load native binding
@@ -518,7 +589,6 @@ export function parseSearchExpressionNative(expression: string): {
   return {
     mainTerm: simplified.mainTerm,
     andTerms: simplified.andTerms,
-    notTerms: expr.excludedTerms,
-    optionalTerms: expr.optionalTerms
+    notTerms: expr.excludedTerms
   };
 }
