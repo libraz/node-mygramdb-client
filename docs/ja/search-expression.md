@@ -34,6 +34,13 @@ const exprJS = simplifySearchExpressionJS('hello world');
 | `(expr)` | グループ化 | `(python OR ruby)` |
 | `term1 OR term2` | 論理OR | `golang OR rust` |
 
+### 解釈の規則
+
+- `OR` は単独の語であるときだけ演算子として扱われ、大文字・小文字は問いません。`OR-tools` のように `OR` で始まるだけの語は通常の用語です。
+- 引用句は、中身がグループのように見えても常にフレーズです。`"(a OR b)"` はそのままの文字列として検索され、ブールのグループにはなりません。
+- `-` の後ろのグループはグループ全体を除外します。入れ子でも同じで、`x +(a -(b OR c))` は `x AND (a NOT (b OR c))` になります。
+- 用語を区切るのは ASCII の空白と全角スペース（U+3000）だけです。その他の Unicode 空白は用語の一部として残り、送信時にクォートされます。
+
 ### 構文の組み合わせ
 
 異なる構文要素を組み合わせて、複雑なクエリを作成できます:
@@ -64,7 +71,6 @@ function parseSearchExpressionNative(expression: string): {
   mainTerm: string;
   andTerms: string[];
   notTerms: string[];
-  optionalTerms: string[];
 }
 ```
 
@@ -88,8 +94,7 @@ console.log(result);
 // {
 //   mainTerm: 'golang',
 //   andTerms: ['tutorial'],
-//   notTerms: ['old'],
-//   optionalTerms: []
+//   notTerms: ['old']
 // }
 
 // クライアントでの使用
@@ -125,14 +130,17 @@ console.log(parsed);
 // {
 //   requiredTerms: ['golang'],
 //   excludedTerms: ['old'],
-//   optionalTerms: [],
+//   requiredIsGroup: [false],
+//   excludedIsGroup: [false],
 //   rawExpression: '(tutorial OR guide)'
 // }
 ```
 
 プレフィックスのない用語はすべて `+` を付けた場合と同じく必須です。`golang rust`
 は両方の語を含むことを意味します。`rawExpression` には入力のうち OR ／ 括弧の
-部分だけが入るため、用語と組み合わせても重複や欠落が起きません。
+部分が入り、括弧の外に OR がある入力は全体がここに入るため、用語と組み合わせても
+重複や欠落が起きません。`+` ／ `-` の後ろのグループは `requiredIsGroup` ／
+`excludedIsGroup` に印が付き、グループのように見えるだけの引用句と区別されます。
 
 ### convertSearchExpression()
 
@@ -167,12 +175,14 @@ convertSearchExpression('+golang +(tutorial OR guide)');
 // 戻り値: 'golang AND (tutorial OR guide)'
 
 convertSearchExpression('golang python OR ruby');
-// 戻り値: 'golang AND (python OR ruby)'
+// 戻り値: '(golang python OR ruby)'
 ```
 
 戻り値は常に MygramDB のブール式であり、Web 形式がそのまま素通りすることは
-ありません。`+` と `-` は `AND` と `AND NOT` に解決され、OR の連鎖はユーザーが
-書いたとおりに結合するよう括弧で囲まれます。結果は
+ありません。`+` と `-` は `AND` と `AND NOT` に解決され、括弧の外に OR を含む式は
+全体が 1 つのグループになります。暗黙の AND は OR より強く結合するため、
+`a OR b c` は `a OR (b c)` を意味し、括弧付きの `(a OR b c)` がサーバー側で
+意味するものと同じです。結果は
 [`searchRaw()`](./api-reference.md#searchraw)、または `queryMode: 'boolean'` を
 指定した `search()` に渡してください。
 
@@ -426,8 +436,9 @@ const results = await client.search('articles', mainTerm, { andTerms, notTerms }
 interface SearchExpression {
   requiredTerms: string[];   // +でマークされた用語と、プレフィックスのない用語すべて
   excludedTerms: string[];   // -でマークされた用語
-  optionalTerms: string[];   // 常に空。外部で組み立てたオブジェクトのために残されている
-  rawExpression: string;     // 入力のうち OR ／ 括弧の部分のみ
+  requiredIsGroup: boolean[]; // requiredTerms と対応: そのエントリーがプレーンな語ではなく整形済みの (...) グループ
+  excludedIsGroup: boolean[]; // excludedTerms と対応: そのエントリーがプレーンな語ではなく整形済みの (...) グループ
+  rawExpression: string;     // 入力のうち OR ／ 括弧の部分（括弧の外に OR があれば入力全体）
 }
 ```
 

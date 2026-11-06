@@ -7,7 +7,7 @@
 
 Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — a high-performance in-memory full-text search engine with MySQL replication support.
 
-**Server compatibility:** MygramDB 1.6 or later, with the protocol implemented through 1.10.2. A server rejects options it predates, and an older server's `ERROR` frames carry no numeric code; the [API reference](docs/en/api-reference.md) marks each option that needs a newer server.
+**Server compatibility:** MygramDB 1.6 or later, with the protocol implemented through 1.12.0. A server rejects options it predates, and an older server's `ERROR` frames carry no numeric code; the [API reference](docs/en/api-reference.md) marks each option that needs a newer server.
 
 <img src="docs/images/request-path.svg" alt="A search call passing from the application through the client's validation and wire-quoting steps to the MygramDB server over TCP, with the response decoded on the way back and MySQL feeding the server through binlog replication." width="960">
 
@@ -257,9 +257,10 @@ Search terms, filter values, `AND`/`NOT` terms, highlight tags, primary keys
 and command arguments all go through the same quoting decision. A value is
 quoted when it is empty, a reserved clause keyword (`AND`, `OR`, `NOT`,
 `FILTER`, `SORT`, `LIMIT`, `OFFSET`, `HIGHLIGHT`, `FUZZY`, `FACET`, `ORDER`,
-matched case-insensitively), or contains ASCII or Unicode whitespace
-(including the full-width and no-break space a pasted value or a full-width
-IME can carry), a control character, a quote, a backslash or a parenthesis.
+matched case-insensitively over ASCII letters), or contains ASCII or Unicode
+`White_Space` (including the full-width, no-break and next-line characters a
+pasted value or a full-width IME can carry; the zero-width space U+200B is not
+whitespace), a control character, a quote, a backslash or a parenthesis.
 Callers always pass the raw, unquoted text:
 
 ```typescript
@@ -273,7 +274,12 @@ await client.search('articles', 'q', { filters: { status: 'AND' } });
 `get()` quotes a primary key that contains whitespace or equals a reserved word,
 so a key returned by `search()` can always be passed back to `get()` unchanged.
 Search results and `get()` documents decode a primary key or string value the
-server quoted the same way.
+server quoted the same way, and a reply whose quoted value is malformed is
+rejected with a `ProtocolError` instead of being guessed at.
+
+Names sent unquoted -- table, column, filter-key and `SET` variable names -- are
+rejected with an `InputValidationError` when they contain any of that
+whitespace, since the server would split them into several tokens.
 
 ## Authentication and Error Codes
 

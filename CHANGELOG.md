@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Tracks MygramDB **v1.12.0**, covering the client-facing changes of v1.11.0 and
+v1.11.1: per-command reply framing, quoting by Unicode `White_Space`, and a
+stricter web-syntax expression parser. The e2e docker stack defaults to the
+`1.12.0` server image.
+
+### Changed
+
+- **`SearchExpression` no longer has `optionalTerms`**, and
+  `parseSearchExpressionNative()` no longer returns it; the field was always
+  empty. `requiredIsGroup` and `excludedIsGroup` now run parallel to
+  `requiredTerms` and `excludedTerms` and mark the entries that are formatted
+  `(...)` groups, so a quoted phrase that merely looks like a group is no longer
+  mistaken for one.
+- **An expression with an OR outside every parenthesis is one group.** Implicit
+  AND binds tighter than OR, so `a OR b c` converts to `(a OR b c)` instead of
+  `c AND (a OR b)`, matching what the parenthesized form means to the server.
+  A `+` or `-` directly beside such an OR (`+a OR b`, `a OR -b`) is rejected
+  as a missing operand.
+- **Wire quoting follows Unicode `White_Space`.** U+0085 is quoted as
+  whitespace and U+200B is not. The reserved-keyword check folds ASCII letters
+  only.
+
+### Fixed
+
+- **A negated nested group excludes the whole group.** `x +(a -(b OR c))` now
+  converts to `x AND (a NOT (b OR c))`; the `NOT` used to be dropped when the
+  operand was a group, and a pending `-` no longer carries over to a later term.
+- **A term that merely begins with `OR`** (`OR-tools`, `OR回路`) stays a term,
+  and only ASCII whitespace and U+3000 separate terms of an expression, so a
+  no-break space stays inside its term.
+- **Replies are framed per command.** A `FACET` reply no longer leaves its
+  closing blank line unread, `CONFIG HELP <path>` returns its full text, a
+  failing highlighted or `DEBUG` search rejects with its error at once, a quoted
+  term containing the word `highlight` no longer waits for rows that never come,
+  and `SYNC STATUS` is read through the blank line that follows `END`.
+- **`DEBUG ON` / `DEBUG OFF` are tracked from the server's reply**, so any
+  spelling sent through `sendCommand()` frames the next `SEARCH` or `COUNT`
+  correctly, and the flag is cleared whenever the socket closes.
+- **`sendCommand()` gives `OPTIMIZE`, `DUMP LOAD` and `DUMP VERIFY` their
+  long-operation deadline** however the keywords are cased or spaced, on both
+  the JavaScript and the native transport.
+- **The native transport honours `optimizeTimeout`, `dumpSaveTimeout`,
+  `dumpLoadTimeout` and `dumpVerifyTimeout`.** They were accepted but ignored,
+  so every native command ran under the single request timeout.
+- **Names containing Unicode whitespace are rejected before sending.** Table,
+  column, filter-key, sort-column, facet-column and `SET` variable names with
+  U+0085, U+00A0, U+3000 or any other `White_Space` code point used to be sent
+  unquoted and split the command.
+- **A malformed quoted value in a `GET` or `SEARCH` reply is rejected** with a
+  `ProtocolError` rather than guessed at, and unquoted tokens split on ASCII
+  whitespace only.
+- **The native C++ addon (`native/`) is resynced with the MygramDB v1.12.0
+  client** (client library soname 2): the same expression, quoting, framing and
+  decoding fixes, and a parsed expression that no longer carries optional terms.
+
+### Added
+
+- `ErrorCode.ConfigUnknownVariable` (1008) and `ErrorCode.ConfigVariableNotMutable`
+  (1009), raised by `SET`.
+
+### Testing
+
+- **The e2e databases run with `binlog_row_metadata=FULL`**, which MygramDB
+  v1.11 and later require of the source.
+- **The matrix covers the server's full target list**: MySQL 8.4, 9.7 and the
+  current Innovation release, and MariaDB 10.11, 11.4, 11.8 and 12.3.
+
 ## [1.6.0] - 2026-09-28
 
 Tracks MygramDB **v1.10.2**, a corrective release that unifies wire quoting

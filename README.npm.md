@@ -7,7 +7,7 @@
 
 Node.js client library for [MygramDB](https://github.com/libraz/mygram-db/) — an in-memory full-text search engine that answers queries from memory rather than an on-disk MySQL FULLTEXT index, kept in sync by MySQL replication.
 
-**Server compatibility:** MygramDB 1.6 or later, with the protocol implemented through 1.10.2. A server rejects options it predates, and an older server's `ERROR` frames carry no numeric code; the [API reference](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/api-reference.md) marks each option that needs a newer server.
+**Server compatibility:** MygramDB 1.6 or later, with the protocol implemented through 1.12.0. A server rejects options it predates, and an older server's `ERROR` frames carry no numeric code; the [API reference](https://github.com/libraz/node-mygramdb-client/blob/main/docs/en/api-reference.md) marks each option that needs a newer server.
 
 ## Usage
 

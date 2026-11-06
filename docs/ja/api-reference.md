@@ -458,6 +458,7 @@ async enableDebug(): Promise<void>
 
 デバッグモードを有効にして、検索結果と共に詳細なクエリパフォーマンスメトリクスを受信します。
 
+クライアントはサーバー自身の `OK DEBUG_ON` / `OK DEBUG_OFF` の応答を見て、`SEARCH` や `COUNT` の応答に末尾のデバッグブロックが付くことを把握します。そのため `sendCommand()` から `DEBUG ON` をどんな綴りで送っても同じように動作します。フラグは接続とともに失われます。
 **戻り値:** デバッグモード有効化時に解決されるPromise
 
 **例外:**
@@ -1028,6 +1029,7 @@ MygramDB 1.10 以降のサーバーが送出しうる数値エラーコードで
 | コード | 名前 | 意味 |
 | --- | --- | --- |
 | 7 | `PermissionDenied` | `AUTH` 成功前に管理コマンドを発行した |
+| 1008 / 1009 | `ConfigUnknownVariable` / `ConfigVariableNotMutable` | `SET` が存在しない変数、またはランタイムで変更できない変数を指定した |
 | 2017 | `MySQLUndecodableBinlogEvent` | このビルドがデコードできないイベントでレプリケーションが停止した |
 | 3006 | `QueryInvalidFilter` | フィルタの形式が不正 |
 | 3008 / 3009 | `QueryInvalidLimit` / `QueryInvalidOffset` | `limit` または `offset` が範囲外 |
@@ -1251,7 +1253,7 @@ parseTableIdentity(identity: string): { database: string | null; table: string }
 
 `qualifyTableIdentity` は `database.table` 形式の識別子を組み立てます（database
 を指定しない場合は bare なテーブル名を返します）。`parseTableIdentity` は識別子を
-各パーツへ分解します。いずれも識別子を検証し、空白・制御文字を拒否します。
+各パーツへ分解します。いずれも識別子を検証し、ASCII・Unicode の空白と制御文字を拒否します。
 
 ```typescript
 qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'

@@ -484,6 +484,10 @@ async enableDebug(): Promise<void>
 
 Enables debug mode to receive detailed query performance metrics with search results.
 
+The client follows the server's own `OK DEBUG_ON` / `OK DEBUG_OFF` reply to know
+that a `SEARCH` or `COUNT` reply will carry a trailing debug block, so the same
+holds when `DEBUG ON` is sent through `sendCommand()` in any spelling. The flag
+ends with the connection.
 **Returns:** Promise that resolves when debug mode is enabled
 
 **Throws:**
@@ -1087,6 +1091,7 @@ The ones a client branches on most often:
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 7 | `PermissionDenied` | Administrative command issued without a successful `AUTH` |
+| 1008 / 1009 | `ConfigUnknownVariable` / `ConfigVariableNotMutable` | `SET` named an unknown variable, or one that cannot change at runtime |
 | 2017 | `MySQLUndecodableBinlogEvent` | Replication stopped on an event this server build cannot decode |
 | 3006 | `QueryInvalidFilter` | Malformed filter |
 | 3008 / 3009 | `QueryInvalidLimit` / `QueryInvalidOffset` | `limit` or `offset` out of range |
@@ -1323,7 +1328,7 @@ parseTableIdentity(identity: string): { database: string | null; table: string }
 
 `qualifyTableIdentity` builds a `database.table` identity (or returns the bare
 table when no database is given); `parseTableIdentity` splits one back into its
-parts. Both validate the identifier and reject whitespace / control characters.
+parts. Both validate the identifier and reject ASCII or Unicode whitespace and control characters.
 
 ```typescript
 qualifyTableIdentity('articles', 'app_db'); // 'app_db.articles'

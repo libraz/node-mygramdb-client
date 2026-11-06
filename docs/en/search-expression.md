@@ -34,6 +34,13 @@ const exprJS = simplifySearchExpressionJS('hello world');
 | `(expr)` | Grouping | `(python OR ruby)` |
 | `term1 OR term2` | Logical OR | `golang OR rust` |
 
+### Reading rules
+
+- `OR` is the operator only as a standalone word, in any letter case. A term that merely begins with it, such as `OR-tools`, is an ordinary term.
+- A quoted phrase is always a phrase, even when its text looks like a group: `"(a OR b)"` is searched for literally, not as a boolean group.
+- A group after `-` excludes the whole group, also when nested: `x +(a -(b OR c))` becomes `x AND (a NOT (b OR c))`.
+- Only ASCII whitespace and the full-width space (U+3000) separate terms. Any other Unicode whitespace stays inside its term, which is then quoted on the wire.
+
 ### Combining Syntax
 
 You can combine different syntax elements to create complex queries:
@@ -64,7 +71,6 @@ function parseSearchExpressionNative(expression: string): {
   mainTerm: string;
   andTerms: string[];
   notTerms: string[];
-  optionalTerms: string[];
 }
 ```
 
@@ -88,8 +94,7 @@ console.log(result);
 // {
 //   mainTerm: 'golang',
 //   andTerms: ['tutorial'],
-//   notTerms: ['old'],
-//   optionalTerms: []
+//   notTerms: ['old']
 // }
 
 // Use with client
@@ -125,15 +130,19 @@ console.log(parsed);
 // {
 //   requiredTerms: ['golang'],
 //   excludedTerms: ['old'],
-//   optionalTerms: [],
+//   requiredIsGroup: [false],
+//   excludedIsGroup: [false],
 //   rawExpression: '(tutorial OR guide)'
 // }
 ```
 
 Every unprefixed term is required, exactly as if it carried `+`; `golang rust`
-means both words must appear. `rawExpression` holds only the OR / parenthesized
-part of the input, so composing it with the terms never duplicates or drops
-anything.
+means both words must appear. `rawExpression` holds the OR / parenthesized
+part of the input; an input with an OR outside every parenthesis is captured
+there as a whole, so composing it with the terms never duplicates or drops
+anything. A required or excluded entry that is a group after `+` / `-` is
+flagged in `requiredIsGroup` / `excludedIsGroup`, which keeps it apart from a
+quoted phrase that merely looks like one.
 
 ### convertSearchExpression()
 
@@ -168,12 +177,14 @@ convertSearchExpression('+golang +(tutorial OR guide)');
 // Returns: 'golang AND (tutorial OR guide)'
 
 convertSearchExpression('golang python OR ruby');
-// Returns: 'golang AND (python OR ruby)'
+// Returns: '(golang python OR ruby)'
 ```
 
 The result is always a MygramDB boolean expression, never web syntax passed
-through: `+` and `-` are resolved into `AND` and `AND NOT`, and an OR chain is
-parenthesized so it binds the way the user wrote it. Pass the result to
+through: `+` and `-` are resolved into `AND` and `AND NOT`, and an expression
+with an OR outside every parenthesis becomes one group, because implicit AND
+binds tighter than OR: `a OR b c` means `a OR (b c)`, exactly what the
+parenthesized form `(a OR b c)` means to the server. Pass the result to
 [`searchRaw()`](./api-reference.md#searchraw), or to `search()` with
 `queryMode: 'boolean'`.
 
@@ -428,8 +439,9 @@ const results = await client.search('articles', mainTerm, { andTerms, notTerms }
 interface SearchExpression {
   requiredTerms: string[];   // Terms marked with +, and every unprefixed term
   excludedTerms: string[];   // Terms marked with -
-  optionalTerms: string[];   // Always empty; retained so an externally built object still works
-  rawExpression: string;     // Only the OR / parenthesized part of the input
+  requiredIsGroup: boolean[]; // Parallel to requiredTerms: the entry is a formatted (...) group, not plain text
+  excludedIsGroup: boolean[]; // Parallel to excludedTerms: the entry is a formatted (...) group, not plain text
+  rawExpression: string;     // The OR / parenthesized part of the input (the whole input when it has a top-level OR)
 }
 ```
 
