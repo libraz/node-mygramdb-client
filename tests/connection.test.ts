@@ -1,7 +1,7 @@
 import type * as net from 'node:net';
 import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { MygramClient } from '../src/client';
-import { isResponseComplete } from '../src/connection';
+import { beginResponseFrame, isResponseComplete } from '../src/connection';
 import { ConnectionError, InputValidationError, ProtocolError, TimeoutError } from '../src/errors';
 
 vi.mock('node:net', async () => {
@@ -33,72 +33,86 @@ function createConnectedClient(config = {}): { client: MygramClient; socket: net
   return { client, socket };
 }
 
+/** Run `buffer` through a fresh frame for `command`, as the connection does after each chunk. */
+function complete(buffer: string, command = '', debug = false): boolean {
+  return isResponseComplete(buffer, beginResponseFrame(command, debug));
+}
+
 describe('isResponseComplete', () => {
   describe('END-marker responses', () => {
     it('treats OK INFO as complete only after END\\r\\n', () => {
-      expect(isResponseComplete('OK INFO\r\nversion: 1.0\r\n')).toBe(false);
-      expect(isResponseComplete('OK INFO\r\nversion: 1.0\r\n\r\n')).toBe(false);
-      expect(isResponseComplete('OK INFO\r\nversion: 1.0\r\nEND\r\n')).toBe(true);
+      expect(complete('OK INFO\r\nversion: 1.0\r\n')).toBe(false);
+      expect(complete('OK INFO\r\nversion: 1.0\r\n\r\n')).toBe(false);
+      expect(complete('OK INFO\r\nversion: 1.0\r\nEND\r\n')).toBe(true);
     });
 
     it('treats OK CACHE_STATS as complete only after END marker', () => {
       // Server response has internal blank lines, so \r\n\r\n MUST NOT trigger completion.
-      expect(isResponseComplete('OK CACHE_STATS\r\n\r\nenabled: true\r\n\r\n')).toBe(false);
-      expect(isResponseComplete('OK CACHE_STATS\r\n\r\nenabled: true\r\n\r\nEND\r\n')).toBe(true);
+      expect(complete('OK CACHE_STATS\r\n\r\nenabled: true\r\n\r\n')).toBe(false);
+      expect(complete('OK CACHE_STATS\r\n\r\nenabled: true\r\n\r\nEND\r\n')).toBe(true);
     });
 
     it('treats OK DUMP_STATUS as complete only after END marker', () => {
-      expect(isResponseComplete('OK DUMP_STATUS\r\nstatus: idle\r\n')).toBe(false);
-      expect(isResponseComplete('OK DUMP_STATUS\r\nstatus: idle\r\nEND\r\n')).toBe(true);
+      expect(complete('OK DUMP_STATUS\r\nstatus: idle\r\n')).toBe(false);
+      expect(complete('OK DUMP_STATUS\r\nstatus: idle\r\nEND\r\n')).toBe(true);
     });
 
     it('treats OK DUMP_INFO (with filepath) as complete only after END marker', () => {
-      expect(isResponseComplete('OK DUMP_INFO /tmp/d.bin\r\nversion: 2\r\n')).toBe(false);
-      expect(isResponseComplete('OK DUMP_INFO /tmp/d.bin\r\nversion: 2\r\nEND\r\n')).toBe(true);
+      expect(complete('OK DUMP_INFO /tmp/d.bin\r\nversion: 2\r\n')).toBe(false);
+      expect(complete('OK DUMP_INFO /tmp/d.bin\r\nversion: 2\r\nEND\r\n')).toBe(true);
     });
 
     it('treats OK REPLICATION as complete only after END marker', () => {
-      expect(isResponseComplete('OK REPLICATION\r\nstatus: running\r\n')).toBe(false);
-      expect(isResponseComplete('OK REPLICATION\r\nstatus: running\r\nEND\r\n')).toBe(true);
+      expect(complete('OK REPLICATION\r\nstatus: running\r\n')).toBe(false);
+      expect(complete('OK REPLICATION\r\nstatus: running\r\nEND\r\n')).toBe(true);
     });
 
-    it('also accepts LF-only END terminators (legacy mocks)', () => {
-      expect(isResponseComplete('OK INFO\nversion: 1\nEND\n')).toBe(true);
-      expect(isResponseComplete('OK CACHE_STATS\nenabled: true\nEND\n')).toBe(true);
+    it('also accepts LF-only END terminators (hand-written fixtures)', () => {
+      expect(complete('OK INFO\nversion: 1\nEND\n')).toBe(true);
+      expect(complete('OK CACHE_STATS\nenabled: true\nEND\n')).toBe(true);
     });
   });
 
   describe('blank-line responses', () => {
-    it('treats +OK CONFIG response as complete after \\r\\n\\r\\n', () => {
-      expect(isResponseComplete('+OK\r\nport: 11016\r\n')).toBe(false);
-      expect(isResponseComplete('+OK\r\nport: 11016\r\n\r\n')).toBe(true);
+    it('treats +OK CONFIG response as complete after the blank line', () => {
+      expect(complete('+OK\r\nport: 11016\r\n')).toBe(false);
+      expect(complete('+OK\r\nport: 11016\r\n\r\n')).toBe(true);
     });
 
-    it('treats OK FACET as complete after \\r\\n\\r\\n', () => {
-      expect(isResponseComplete('OK FACET 2\r\nfoo\t1\r\nbar\t2\r\n')).toBe(false);
-      expect(isResponseComplete('OK FACET 2\r\nfoo\t1\r\nbar\t2\r\n\r\n')).toBe(true);
+    it('treats OK FACET as complete once the closing blank lines have arrived', () => {
+      expect(complete('OK FACET 2\r\nfoo\t1\r\nbar\t2\r\n')).toBe(false);
+      expect(complete('OK FACET 2\r\nfoo\t1\r\nbar\t2\r\n\r\n')).toBe(true);
+      expect(complete('OK FACET 2 2\r\nfoo\t1\r\nbar\t2\r\n\r\n')).toBe(false);
+      expect(complete('OK FACET 2 2\r\nfoo\t1\r\nbar\t2\r\n\r\n\r\n')).toBe(true);
     });
   });
 
   describe('single-line responses', () => {
     it('treats OK COUNT as complete after first \\r\\n', () => {
-      expect(isResponseComplete('OK COUNT 42\r\n')).toBe(true);
-      expect(isResponseComplete('OK COUNT 42\n')).toBe(true);
+      expect(complete('OK COUNT 42\r\n', 'COUNT t q')).toBe(true);
+      expect(complete('OK COUNT 42\n', 'COUNT t q')).toBe(true);
     });
 
     it('treats OK RESULTS without DEBUG as complete after first \\r\\n', () => {
-      expect(isResponseComplete('OK RESULTS 3 a b c\r\n')).toBe(true);
+      expect(complete('OK RESULTS 3 a b c\r\n', 'SEARCH t q')).toBe(true);
     });
 
     it('treats OK RESULTS with DEBUG as multi-line ending in blank line', () => {
-      expect(isResponseComplete('OK RESULTS 1 id1\r\n# DEBUG\r\nquery_time: 0.5\r\n')).toBe(false);
-      expect(isResponseComplete('OK RESULTS 1 id1\r\n# DEBUG\r\nquery_time: 0.5\r\n\r\n')).toBe(true);
+      const debug = true;
+      expect(complete('OK RESULTS 1 id1\r\n', 'SEARCH t q', debug)).toBe(false);
+      expect(complete('OK RESULTS 1 id1\r\n\r\n# DEBUG\r\nquery_time: 0.5\r\n', 'SEARCH t q', debug)).toBe(false);
+      expect(complete('OK RESULTS 1 id1\r\n\r\n# DEBUG\r\nquery_time: 0.5\r\n\r\n', 'SEARCH t q', debug)).toBe(true);
+    });
+
+    it('ends any ERROR frame at its line, whatever the command', () => {
+      expect(complete('ERROR 4007 no table\r\n', 'SEARCH t q HIGHLIGHT', true)).toBe(true);
+      expect(complete('ERROR 3000 bad\r\n', 'FACET t c')).toBe(true);
     });
 
     it('returns false on incomplete buffers', () => {
-      expect(isResponseComplete('')).toBe(false);
-      expect(isResponseComplete('OK RESULTS')).toBe(false);
-      expect(isResponseComplete('OK INFO')).toBe(false);
+      expect(complete('')).toBe(false);
+      expect(complete('OK RESULTS')).toBe(false);
+      expect(complete('OK INFO')).toBe(false);
     });
   });
 });

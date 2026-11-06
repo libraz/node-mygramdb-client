@@ -7,7 +7,7 @@ import {
   qualifyTableIdentity,
   quoteCommandArgument
 } from '../src/command-utils';
-import { isResponseComplete } from '../src/connection';
+import { beginResponseFrame, isResponseComplete } from '../src/connection';
 import { InputValidationError, ProtocolError } from '../src/errors';
 import { NativeMygramClient } from '../src/native-client';
 
@@ -165,13 +165,14 @@ describe('parseTableIdentity', () => {
 });
 
 describe('isResponseComplete framing for SYNC_STATUS', () => {
-  it('treats OK SYNC_STATUS as END-terminated multi-line', () => {
-    expect(isResponseComplete('OK SYNC_STATUS\r\n')).toBe(false);
-    expect(isResponseComplete('OK SYNC_STATUS\r\nstatus=IDLE\r\n')).toBe(false);
-    expect(isResponseComplete('OK SYNC_STATUS\r\nstatus=IDLE\r\nEND\r\n')).toBe(true);
-    expect(isResponseComplete('OK SYNC_STATUS\r\ntable=users status=RUNNING\r\nEND\r\n')).toBe(true);
-    // The server appends a trailing blank line after END for SYNC_STATUS.
-    expect(isResponseComplete('OK SYNC_STATUS\r\nstatus=IDLE message="x"\r\nEND\r\n\r\n')).toBe(true);
+  const complete = (buffer: string): boolean => isResponseComplete(buffer, beginResponseFrame('SYNC STATUS', false));
+
+  it('treats OK SYNC_STATUS as END-terminated multi-line followed by the transport blank line', () => {
+    expect(complete('OK SYNC_STATUS\r\n')).toBe(false);
+    expect(complete('OK SYNC_STATUS\r\nstatus=IDLE\r\n')).toBe(false);
+    expect(complete('OK SYNC_STATUS\r\nstatus=IDLE\r\nEND\r\n')).toBe(false);
+    expect(complete('OK SYNC_STATUS\r\ntable=users status=RUNNING\r\nEND\r\n\r\n')).toBe(true);
+    expect(complete('OK SYNC_STATUS\r\nstatus=IDLE message="x"\r\nEND\r\n\r\n')).toBe(true);
   });
 });
 
@@ -380,7 +381,7 @@ describe('MygramClient v1.7 SYNC family', () => {
     await client.connect();
     const promise = client.syncStatus();
     expect(lastCommand(socket)).toBe('SYNC STATUS\r\n');
-    socket.emit('data', 'OK SYNC_STATUS\r\ntable=users status=IN_PROGRESS progress=10/100 rows (10.0%)\r\nEND\r\n');
+    socket.emit('data', 'OK SYNC_STATUS\r\ntable=users status=IN_PROGRESS progress=10/100 rows (10.0%)\r\nEND\r\n\r\n');
     const status = await promise;
     expect(status).toContain('table=users');
     expect(status).toContain('IN_PROGRESS');

@@ -43,101 +43,135 @@ function parseColonKeyValueLines(lines: string[]): Record<string, string> {
   return result;
 }
 
-/**
- * Decode one server-escaped response value.
- *
- * The server quotes a primary key or a string filter value whenever it is
- * empty or contains whitespace, a double quote, a backslash or a control
- * character, escaping `\\`, `\"`, `\r`, `\n`, `\t` and `\xNN` inside the
- * quotes. An unquoted token is returned as-is, so this is safe to apply to
- * every token.
- *
- * @param {string} token - Single token exactly as it appeared on the wire
- * @returns {string} The original value
- */
-export function unescapeResponseValue(token: string): string {
-  if (token.length < 2 || !token.startsWith('"') || !token.endsWith('"')) {
-    return token;
-  }
+/** ASCII whitespace (0x09-0x0D, 0x20), the only separator between response tokens. */
+function isAsciiSpace(code: number): boolean {
+  return (code >= 0x09 && code <= 0x0d) || code === 0x20;
+}
 
-  const body = token.slice(1, -1);
-  let out = '';
-  for (let i = 0; i < body.length; i += 1) {
-    if (body[i] !== '\\') {
-      out += body[i];
-      continue;
-    }
-    i += 1;
-    switch (body[i]) {
-      case 'r':
-        out += '\r';
-        break;
-      case 'n':
-        out += '\n';
-        break;
-      case 't':
-        out += '\t';
-        break;
-      case 'x': {
-        const hex = body.slice(i + 1, i + 3);
-        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
-          out += String.fromCharCode(Number.parseInt(hex, 16));
-          i += 2;
-        } else {
-          out += 'x';
-        }
-        break;
-      }
-      case undefined:
-        // Trailing backslash: keep it rather than dropping data.
-        out += '\\';
-        break;
-      default:
-        out += body[i];
-        break;
-    }
-  }
-  return out;
+/** One token read from a response line, and the offset just past it. */
+interface WireToken {
+  value: string;
+  end: number;
 }
 
 /**
- * Split a response line into space-delimited tokens, keeping a quoted section
- * whole.
+ * Read one token from a response line, the inverse of the server's quoting.
  *
- * A space only ends a token outside quotes, so both a standalone quoted value
- * and a `column="a b"` pair survive the split. Escaped characters are left
- * untouched here and decoded by {@link unescapeResponseValue}.
+ * Skips leading ASCII whitespace, then reads either a bare token (up to the
+ * next ASCII whitespace) or, when it opens with `"`, a quoted token whose
+ * `\\`, `\"`, `\r`, `\n`, `\t` and `\xHH` escapes are decoded and whose other
+ * escaped characters stand for themselves. The server quotes a value whenever
+ * it is empty or contains whitespace, a double quote, a backslash or a control
+ * character. Only ASCII whitespace separates tokens, so a non-breaking space or
+ * an ideographic space inside a bare token stays part of it.
  *
- * @param {string} line - Response line without its trailing newline
- * @returns {string[]} Raw tokens, still escaped
+ * @param {string} input - Response text
+ * @param {number} [start=0] - Offset to start reading from
+ * @returns {WireToken | null} The token, or null for an unterminated quote, a
+ *   truncated or non-hex `\x` escape, or when nothing is left to read
  */
-function tokenizeResponseLine(line: string): string[] {
-  const tokens: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (ch === '\\' && inQuotes && i + 1 < line.length) {
-      current += ch + line[i + 1];
-      i += 1;
-      continue;
-    }
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-      current += ch;
-      continue;
-    }
-    if (ch === ' ' && !inQuotes) {
-      if (current !== '') {
-        tokens.push(current);
-        current = '';
-      }
-      continue;
-    }
-    current += ch;
+function parseWireToken(input: string, start = 0): WireToken | null {
+  let pos = start;
+  while (pos < input.length && isAsciiSpace(input.charCodeAt(pos))) {
+    pos += 1;
   }
-  if (current !== '') {
-    tokens.push(current);
+  if (pos >= input.length) {
+    return null;
+  }
+
+  if (input[pos] !== '"') {
+    const tokenStart = pos;
+    while (pos < input.length && !isAsciiSpace(input.charCodeAt(pos))) {
+      pos += 1;
+    }
+    return { value: input.slice(tokenStart, pos), end: pos };
+  }
+
+  pos += 1;
+  let value = '';
+  while (pos < input.length) {
+    const char = input[pos];
+    pos += 1;
+    if (char === '"') {
+      return { value, end: pos };
+    }
+    if (char !== '\\') {
+      value += char;
+      continue;
+    }
+    if (pos >= input.length) {
+      return null;
+    }
+    const escaped = input[pos];
+    pos += 1;
+    switch (escaped) {
+      case 'n':
+        value += '\n';
+        break;
+      case 'r':
+        value += '\r';
+        break;
+      case 't':
+        value += '\t';
+        break;
+      case 'x': {
+        const hex = pos + 1 < input.length ? input.slice(pos, pos + 2) : '';
+        if (!/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          return null;
+        }
+        value += String.fromCharCode(Number.parseInt(hex, 16));
+        pos += 2;
+        break;
+      }
+      default:
+        value += escaped;
+        break;
+    }
+  }
+  return null;
+}
+
+/**
+ * Decode a response value that must be exactly one token.
+ *
+ * @param {string} token - Single token exactly as it appeared on the wire
+ * @param {string} what - Description for the error message
+ * @returns {string} The original value
+ * @throws {ProtocolError} When the token is malformed or has trailing text
+ */
+export function unescapeResponseValue(token: string, what = 'response value'): string {
+  const parsed = parseWireToken(token);
+  if (parsed === null || token.slice(parsed.end).trim() !== '') {
+    throw new ProtocolError(`Malformed ${what}: ${token}`);
+  }
+  return parsed.value;
+}
+
+/**
+ * Read every remaining token of a response line.
+ *
+ * @param {string} line - Response text
+ * @param {number} start - Offset to start reading from
+ * @param {string} what - Description for the error message
+ * @returns {string[]} Decoded tokens
+ * @throws {ProtocolError} When a quoted token is malformed
+ */
+function parseWireTokens(line: string, start: number, what: string): string[] {
+  const tokens: string[] = [];
+  let pos = start;
+  while (pos < line.length) {
+    while (pos < line.length && isAsciiSpace(line.charCodeAt(pos))) {
+      pos += 1;
+    }
+    if (pos >= line.length) {
+      break;
+    }
+    const token = parseWireToken(line, pos);
+    if (token === null) {
+      throw new ProtocolError(`Malformed ${what}: ${line}`);
+    }
+    tokens.push(token.value);
+    pos = token.end;
   }
   return tokens;
 }
@@ -244,8 +278,8 @@ export function parseSearchResponse(response: string): SearchResponse {
     throw new ProtocolError(`Invalid SEARCH response: ${firstLine}`);
   }
 
-  const headerParts = tokenizeResponseLine(firstLine);
-  const totalCount = parseInt(headerParts[2], 10);
+  const header = parseWireTokens(firstLine, 'OK RESULTS'.length, 'SEARCH primary key');
+  const totalCount = parseInt(header[0], 10);
 
   const payloadLines: string[] = [];
   let debugIndex = -1;
@@ -266,14 +300,16 @@ export function parseSearchResponse(response: string): SearchResponse {
     results = payloadLines.map((line) => {
       const tab = line.indexOf('\t');
       if (tab < 0) {
-        return { primaryKey: unescapeResponseValue(line), snippet: '' };
+        return { primaryKey: unescapeResponseValue(line, 'SEARCH primary key'), snippet: '' };
       }
-      return { primaryKey: unescapeResponseValue(line.slice(0, tab)), snippet: line.slice(tab + 1) };
+      return {
+        primaryKey: unescapeResponseValue(line.slice(0, tab), 'SEARCH primary key'),
+        snippet: line.slice(tab + 1)
+      };
     });
   } else {
     // Classic mode: PKs follow the count on the first line.
-    const ids = headerParts.slice(3);
-    results = ids.map((id) => ({ primaryKey: unescapeResponseValue(id) }));
+    results = header.slice(1).map((id) => ({ primaryKey: id }));
   }
 
   let debug: DebugInfo | undefined;
@@ -381,34 +417,80 @@ export function parseCountResponse(response: string): CountResponse {
 }
 
 /**
+ * Parse the `key=value` tail of a `GET` reply.
+ *
+ * Each value is read with {@link parseWireToken}, the decoder `SEARCH` primary
+ * keys use: the server quotes a string value when it is empty or carries
+ * whitespace, a quote, a backslash or a control character. A value may itself
+ * contain `=`; only the first one separates the column from the value. A token
+ * without `=` is skipped; a malformed quoted value rejects the whole reply.
+ *
+ * @param {string} text - Reply text following the primary key
+ * @returns {Record<string, string> | null} The fields, or null when a quoted value is malformed
+ */
+function parseKeyValuePairs(text: string): Record<string, string> | null {
+  const fields: Record<string, string> = {};
+  let pos = 0;
+  while (pos < text.length) {
+    while (pos < text.length && isAsciiSpace(text.charCodeAt(pos))) {
+      pos += 1;
+    }
+    const keyStart = pos;
+    while (pos < text.length && text[pos] !== '=' && !isAsciiSpace(text.charCodeAt(pos))) {
+      pos += 1;
+    }
+    if (pos >= text.length || text[pos] !== '=') {
+      continue;
+    }
+
+    const key = text.slice(keyStart, pos);
+    pos += 1;
+
+    let value = '';
+    // An empty value is always quoted on the wire, so '=' before whitespace is an empty bare token.
+    if (pos < text.length && !isAsciiSpace(text.charCodeAt(pos))) {
+      const token = parseWireToken(text, pos);
+      if (token === null) {
+        return null;
+      }
+      value = token.value;
+      pos = token.end;
+    }
+
+    if (key !== '') {
+      fields[key] = value;
+    }
+  }
+  return fields;
+}
+
+/**
  * Parse GET response.
  *
- * The wire form is `OK DOC <primaryKey> <column>=<value> ...`. The primary key
+ * The wire form is `OK DOC <primaryKey> <column>=<value> ...`; the primary key
  * and any string column value are quoted and escaped by the server when they
- * are empty or carry whitespace, a quote, a backslash or a control character,
- * so tokens are split with quoting in mind and then decoded. A value may
- * itself contain `=`; only the first one separates the column from the value.
+ * need it.
  *
  * @param {string} response - Raw response (newline-normalized)
  * @returns {Document} Parsed document
- * @throws {ProtocolError} When the response prefix is not `OK DOC `
+ * @throws {ProtocolError} When the response prefix is not `OK DOC `, or the
+ *   primary key or a quoted field value is malformed
  */
 export function parseDocumentResponse(response: string): Document {
   if (!response.startsWith('OK DOC ')) {
     throw new ProtocolError(`Invalid GET response: ${response}`);
   }
 
-  const parts = tokenizeResponseLine(response.substring('OK DOC '.length));
-  const primaryKey = parts.length > 0 ? unescapeResponseValue(parts[0]) : '';
-  const fields: Record<string, string> = {};
+  const keyToken = parseWireToken(response, 'OK DOC '.length);
+  if (keyToken === null) {
+    throw new ProtocolError(`Malformed GET response: ${response}`);
+  }
+  const fields = parseKeyValuePairs(response.slice(keyToken.end));
+  if (fields === null) {
+    throw new ProtocolError(`Malformed GET field value: ${response}`);
+  }
 
-  parts.slice(1).forEach((part) => {
-    const separator = part.indexOf('=');
-    if (separator <= 0) return;
-    fields[part.slice(0, separator)] = unescapeResponseValue(part.slice(separator + 1));
-  });
-
-  return { primaryKey, fields };
+  return { primaryKey: keyToken.value, fields };
 }
 
 /**

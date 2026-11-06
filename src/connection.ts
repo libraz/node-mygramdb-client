@@ -8,10 +8,9 @@
  *   2. Serialize outgoing commands behind a FIFO queue so that concurrent
  *      callers cannot interleave bytes on the wire and corrupt the
  *      protocol stream.
- *   3. Detect the boundary of every protocol response (single-line,
- *      `\r\n\r\n`-terminated multi-line, and `END\r\n`-terminated
- *      multi-line) so each `sendCommand` resolves with exactly one
- *      response.
+ *   3. Detect the boundary of every protocol response (see
+ *      {@link ./response-frame}) so each `sendCommand` resolves with exactly
+ *      one response.
  *
  * The class is intentionally focused on transport and framing -
  * response payload parsing lives in {@link ./response-parser}.
@@ -20,7 +19,14 @@
 import { Socket } from 'node:net';
 import { buildAuthCommand } from './command-builder.js';
 import { ConnectionError, ProtocolError, ServerError, TimeoutError } from './errors.js';
+import { beginResponseFrame, isResponseComplete, type ResponseFrameState } from './response-frame.js';
 import { parseErrorFrame } from './response-parser.js';
+
+export { beginResponseFrame, isResponseComplete, type ResponseFrameState };
+
+/** Replies that confirm the connection's `DEBUG` flag changed. */
+const DEBUG_ON_REPLY = 'OK DEBUG_ON';
+const DEBUG_OFF_REPLY = 'OK DEBUG_OFF';
 
 /**
  * Configuration consumed by {@link Connection}. Mirrors the resolved
@@ -76,6 +82,8 @@ interface PendingCommand {
   reject: (error: Error) => void;
   /** Overrides {@link ConnectionConfig.timeout} for this command only */
   timeout?: number;
+  /** Reply framing context, set when the command is written */
+  frame?: ResponseFrameState;
 }
 
 /**
@@ -97,10 +105,11 @@ export class Connection {
   private inflightTimeout: NodeJS.Timeout | null = null;
   private reconnecting = false;
   /**
-   * Mirrors the server's per-connection `DEBUG ON`/`OFF` flag so a SEARCH/
-   * COUNT reply's completion check knows a trailing debug block is coming
-   * before any bytes of it have arrived. Reset on disconnect since the flag
-   * does not survive a new server-side connection.
+   * Mirrors the server's per-connection `DEBUG ON`/`OFF` flag, read from the
+   * server's reply, so a SEARCH/COUNT reply's completion check knows a trailing
+   * debug block is coming before any bytes of it have arrived. Reset whenever
+   * the socket goes away since the flag does not survive a new server-side
+   * connection.
    */
   private debugMode = false;
   /**
@@ -177,6 +186,7 @@ export class Connection {
     return new Promise<void>((resolve, reject) => {
       const socket = new Socket();
       this.socket = socket;
+      this.debugMode = false;
       socket.setEncoding('utf8');
       socket.setTimeout(this.config.timeout);
 
@@ -226,6 +236,7 @@ export class Connection {
 
       socket.on('close', () => {
         this.connected = false;
+        this.debugMode = false;
         finishHandshake(() => {
           reject(new ConnectionError('Connection closed'));
         });
@@ -394,6 +405,7 @@ export class Connection {
       return;
     }
 
+    command.frame = beginResponseFrame(command.command, this.debugMode);
     this.inflight = command;
     this.inflightTimeout = setTimeout(() => {
       this.inflightTimeout = null;
@@ -434,8 +446,8 @@ export class Connection {
       this.failPending(overflow);
       return;
     }
-    const completionOptions = responseCompletionOptionsFor(this.inflight.command, this.debugMode);
-    if (!isResponseComplete(this.responseBuffer, completionOptions)) {
+    const { frame } = this.inflight;
+    if (frame === undefined || !isResponseComplete(this.responseBuffer, frame)) {
       return;
     }
     this.completeResponse();
@@ -447,7 +459,7 @@ export class Connection {
       this.responseBuffer = '';
       return;
     }
-    const raw = this.responseBuffer;
+    const raw = this.responseBuffer.slice(pending.frame?.frameStart ?? 0);
     this.responseBuffer = '';
     this.inflight = null;
     if (this.inflightTimeout !== null) {
@@ -461,14 +473,10 @@ export class Connection {
     if (errorFrame !== null) {
       pending.reject(new ServerError(errorFrame.message, errorFrame.code, response));
     } else {
-      // A raw "DEBUG ON"/"DEBUG OFF" command that the server accepted:
-      // track the flag so the next SEARCH/COUNT on this connection knows to
-      // expect a trailing debug block.
-      const upperCommand = pending.command.trim().toUpperCase();
-      if (upperCommand === 'DEBUG ON') {
-        this.debugMode = true;
-      } else if (upperCommand === 'DEBUG OFF') {
-        this.debugMode = false;
+      // Follow the server's own confirmation, so DEBUG ON/OFF sent in any
+      // spelling frames the next SEARCH/COUNT correctly.
+      if (response === DEBUG_ON_REPLY || response === DEBUG_OFF_REPLY) {
+        this.debugMode = response === DEBUG_ON_REPLY;
       }
       pending.resolve(response);
     }
@@ -492,180 +500,4 @@ export class Connection {
     }
     this.responseBuffer = '';
   }
-}
-
-const END_MARKER_FIRST_LINES = new Set<string>([
-  'OK INFO',
-  'OK REPLICATION',
-  'OK CACHE_STATS',
-  'OK DUMP_STATUS',
-  'OK SYNC_STATUS'
-]);
-
-const BLANK_LINE_FIRST_LINE_PREFIXES = ['+OK', 'OK CONFIG', 'OK FACET'];
-
-/** `SHOW VARIABLES`'s bare ASCII table border, with no `OK`/`+OK` status prefix. */
-const TABLE_BORDER_PREFIX = '+-';
-
-/**
- * Context {@link isResponseComplete} cannot derive from the buffered bytes
- * alone: what command produced this response, and whether the connection's
- * `DEBUG` flag is on.
- */
-export interface ResponseCompletionOptions {
-  /**
-   * True when the in-flight command is `SEARCH`/`COUNT` and either `DEBUG`
-   * is on or the command requested `HIGHLIGHT`, so its reply cannot end at
-   * the header line even when a chunk boundary happens to land right after
-   * it. Mirrors the C++ client's `ResponseCompletionState::expect_multiline_tail`.
-   */
-  expectMultilineTail?: boolean;
-  /**
-   * True alongside `expectMultilineTail` when a `# DEBUG` block can actually
-   * appear (`DEBUG` is on). The block's own opening (`\r\n\r\n# DEBUG\r\n`)
-   * is itself a blank-line-terminated buffer, so a chunk boundary landing
-   * right after that blank line -- before "# DEBUG" itself has arrived --
-   * must not be trusted as the frame's end. Mirrors the C++ client's
-   * `ResponseCompletionState::expect_debug_marker`.
-   */
-  expectDebugMarker?: boolean;
-}
-
-/** A `# DEBUG` block's fixed opening line, once its own leading blank line has arrived. */
-const DEBUG_BLOCK_MARKER = '# DEBUG';
-
-/**
- * Detect whether the buffered response is complete.
- *
- * Authoritative protocol framing - mirrors the C++ client's
- * `protocol_detection.h::IsResponseComplete`:
- *
- *   - `OK INFO`, `OK REPLICATION`, `OK CACHE_STATS`, `OK DUMP_INFO`,
- *     `OK DUMP_STATUS`, `OK SYNC_STATUS` end with `END\r\n`. These
- *     responses contain internal blank lines, so `\r\n\r\n` is NOT accepted.
- *   - `+OK`, `OK CONFIG`, `OK FACET` end with `\r\n\r\n`.
- *   - `SHOW VARIABLES`'s bare `+-...-+` table (no status prefix) also ends
- *     with `\r\n\r\n`; every border and row line ends in `\r\n` on its own,
- *     so it can never be trusted to be the whole response after just one line.
- *   - Other responses (`OK RESULTS`, `OK COUNT`, `OK DOC`, `OK`,
- *     `OK DUMP_*`, `ERROR ...`) are single-line when the first `\r\n` is
- *     at the end -- unless {@link ResponseCompletionOptions.expectMultilineTail}
- *     says this SEARCH/COUNT reply's header only looks single-line because a
- *     debug block or highlight rows haven't arrived yet. If there is content
- *     after the first line (DEBUG block or HIGHLIGHT rows), they end with `\r\n\r\n`.
- *
- * The function also accepts LF-only terminators (`\nEND\n`, `\n\n`) so
- * unit tests written before the protocol fix continue to validate
- * payload-level behaviour without re-emitting CRLF.
- *
- * @param {string} buffer - Accumulated response bytes
- * @param {ResponseCompletionOptions} [options] - Command context (defaults preserve
- *   the single-line shortcut, matching every caller that has no command in hand)
- * @returns {boolean} True when the buffer contains a complete response
- */
-export function isResponseComplete(buffer: string, options: ResponseCompletionOptions = {}): boolean {
-  if (buffer.length === 0) return false;
-
-  const firstNewline = buffer.indexOf('\n');
-  if (firstNewline === -1) {
-    return false;
-  }
-  const firstLine = stripTrailingCarriageReturn(buffer.slice(0, firstNewline));
-
-  if (isEndMarkerResponse(firstLine)) {
-    return endsWithEndMarker(buffer);
-  }
-
-  if (isBlankLineResponse(firstLine) || firstLine.startsWith(TABLE_BORDER_PREFIX)) {
-    return endsWithBlankLine(buffer);
-  }
-
-  // SEARCH/COUNT/GET/DUMP_SAVE/etc. - single-line unless followed by
-  // a DEBUG block or HIGHLIGHT rows.
-  const rest = buffer.slice(firstNewline + 1);
-  if (rest.length === 0 && !options.expectMultilineTail) {
-    // First line ended at the end of buffer - complete.
-    return true;
-  }
-
-  if (options.expectDebugMarker && !buffer.includes(DEBUG_BLOCK_MARKER)) {
-    // The blank line before "# DEBUG" can itself look like the frame's
-    // terminator; wait for the marker itself before trusting one.
-    return false;
-  }
-
-  // Anything after the first line means the response is multi-line and
-  // ends with a blank line.
-  return endsWithBlankLine(buffer);
-}
-
-function stripTrailingCarriageReturn(line: string): string {
-  return line.endsWith('\r') ? line.slice(0, -1) : line;
-}
-
-function isEndMarkerResponse(firstLine: string): boolean {
-  if (END_MARKER_FIRST_LINES.has(firstLine)) return true;
-  // DUMP_INFO carries an optional filepath suffix on the first line.
-  if (firstLine.startsWith('OK DUMP_INFO ') || firstLine.startsWith('OK DUMP_INFO\t')) return true;
-  return false;
-}
-
-function isBlankLineResponse(firstLine: string): boolean {
-  for (const prefix of BLANK_LINE_FIRST_LINE_PREFIXES) {
-    if (firstLine === prefix || firstLine.startsWith(`${prefix} `) || firstLine.startsWith(`${prefix}\t`)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check whether a command is `SEARCH` or `COUNT`.
- *
- * Only these two produce an `OK RESULTS`/`OK COUNT` header that a trailing
- * `DEBUG` block or `HIGHLIGHT` rows can follow; every other command's
- * single-line reply is genuinely done at its first `\r\n` regardless of the
- * connection's debug flag. Mirrors the C++ client's `IsSearchOrCountCommand`.
- */
-function isSearchOrCountCommand(command: string): boolean {
-  const verbEnd = command.search(/[ \t]/);
-  const verb = (verbEnd === -1 ? command : command.slice(0, verbEnd)).toUpperCase();
-  return verb === 'SEARCH' || verb === 'COUNT';
-}
-
-/**
- * Check whether a command's `HIGHLIGHT` clause, if any, is real.
- *
- * `HIGHLIGHT` is a case-insensitive clause keyword recognized as a bare,
- * whitespace-delimited token; {@link escapeQueryString} quotes any query/
- * AND/NOT/FILTER value that collides with it, so an unquoted `HIGHLIGHT`
- * token in the command text can only be the real clause. Mirrors the C++
- * client's `CommandRequestsHighlight`.
- */
-function commandRequestsHighlight(command: string): boolean {
-  return command.split(/[ \t]+/).some((token) => token.toUpperCase() === 'HIGHLIGHT');
-}
-
-/**
- * Derive {@link ResponseCompletionOptions} for a command about to be sent,
- * from the command text and the connection's current `DEBUG` flag.
- */
-function responseCompletionOptionsFor(command: string, debugMode: boolean): ResponseCompletionOptions {
-  const isSearchOrCount = isSearchOrCountCommand(command);
-  return {
-    expectMultilineTail: isSearchOrCount && (debugMode || commandRequestsHighlight(command)),
-    expectDebugMarker: isSearchOrCount && debugMode
-  };
-}
-
-function endsWithEndMarker(buffer: string): boolean {
-  // The `END` terminator sits on its own line. Most multi-line responses end
-  // with `...\r\nEND\r\n`, but some (e.g. SYNC_STATUS) append an extra blank
-  // line and end with `...\r\nEND\r\n\r\n`. Accept `END` as the final
-  // non-empty line regardless of how many trailing CRLFs follow.
-  return /(?:\r?\n)END(?:\r?\n)*$/.test(buffer);
-}
-
-function endsWithBlankLine(buffer: string): boolean {
-  return buffer.endsWith('\r\n\r\n') || buffer.endsWith('\n\n') || buffer.endsWith('\n\r\n');
 }

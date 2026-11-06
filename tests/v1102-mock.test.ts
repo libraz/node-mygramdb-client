@@ -141,7 +141,7 @@ describe('MygramDB v1.10.2 multi-line response framing', () => {
   it('reads a chunked DEBUG-mode response completely, past its own blank-line opening', async () => {
     const { client, socket } = createConnectedClient();
     const debugPromise = client.enableDebug();
-    socket.emit('data', 'OK\r\n');
+    socket.emit('data', 'OK DEBUG_ON\r\n');
     await debugPromise;
 
     const promise = client.search('articles', 'hello');

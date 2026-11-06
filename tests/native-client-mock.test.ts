@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConnectionError, ProtocolError } from '../src/errors';
+import { ConnectionError, InputValidationError, ProtocolError } from '../src/errors';
 import { NativeMygramClient } from '../src/native-client';
 
 function createMockNative(overrides = {}) {
@@ -581,5 +581,61 @@ describe('NativeMygramClient', () => {
 
       await expect(client.disableDebug()).rejects.toThrow(ProtocolError);
     });
+  });
+});
+
+describe('NativeMygramClient shares the JS client rules', () => {
+  async function connected(config = {}) {
+    const native = createMockNative({ sendCommand: vi.fn().mockReturnValue('OK\r\n') });
+    const client = new NativeMygramClient(native, config);
+    await client.connect();
+    return { native, client };
+  }
+
+  it('rejects names with Unicode whitespace before reaching the addon', async () => {
+    const { native, client } = await connected();
+    await expect(client.search('art\u3000icles', 'q')).rejects.toBeInstanceOf(InputValidationError);
+    await expect(client.search('articles', 'q', { filters: { 'a\u00A0b': 'x' } })).rejects.toBeInstanceOf(
+      InputValidationError
+    );
+    await expect(client.search('articles', 'q', { sortColumn: 'a\u0085b' })).rejects.toBeInstanceOf(
+      InputValidationError
+    );
+    await expect(client.facet('articles', 'a\u00A0b')).rejects.toBeInstanceOf(InputValidationError);
+    await expect(client.setVariable('a\u3000b', '1')).rejects.toBeInstanceOf(InputValidationError);
+    expect(native.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['optimize', 'optimizeTimeout'],
+    ['Dump \t Load /tmp/a.dump', 'dumpLoadTimeout'],
+    ['DUMP\u3000verify x', 'dumpVerifyTimeout']
+  ])('gives raw %s its long-operation deadline', async (command, key) => {
+    const { native, client } = await connected({ [key]: 7777 });
+    await client.sendCommand(command);
+    expect(native.sendCommand).toHaveBeenCalledWith('handle', command, 7777);
+  });
+
+  it('leaves an ordinary raw command on the addon default deadline', async () => {
+    const { native, client } = await connected();
+    await client.sendCommand('INFO');
+    expect(native.sendCommand).toHaveBeenCalledWith('handle', 'INFO');
+  });
+
+  it('applies the configured deadlines to the typed long operations', async () => {
+    const { native, client } = await connected({
+      optimizeTimeout: 1111,
+      dumpLoadTimeout: 2222,
+      dumpVerifyTimeout: 3333,
+      dumpSaveTimeout: 4444
+    });
+    await client.optimize();
+    expect(native.sendCommand).toHaveBeenLastCalledWith('handle', 'OPTIMIZE', 1111);
+    await client.dumpLoad('/tmp/a.dump');
+    expect(native.sendCommand).toHaveBeenLastCalledWith('handle', 'DUMP LOAD /tmp/a.dump', 2222);
+    await client.dumpVerify('/tmp/a.dump');
+    expect(native.sendCommand).toHaveBeenLastCalledWith('handle', 'DUMP VERIFY /tmp/a.dump', 3333);
+    await client.dumpSave().catch(() => {});
+    expect(native.sendCommand).toHaveBeenLastCalledWith('handle', 'DUMP SAVE', 4444);
   });
 });

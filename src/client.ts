@@ -23,6 +23,7 @@ import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier, quoteCommandArgument } 
 import { applyClientDefaults } from './config-utils.js';
 import { Connection } from './connection.js';
 import { ProtocolError } from './errors.js';
+import { longOperationTimeout } from './response-frame.js';
 import {
   parseCacheStatsResponse,
   parseCountResponse,
@@ -589,7 +590,7 @@ export class MygramClient {
    * @returns {Promise<string>} Response string from the server
    */
   sendCommand(command: string): Promise<string> {
-    return this.connection.sendCommand(command);
+    return this.connection.sendCommand(command, longOperationTimeout(command, this.config));
   }
 }
 

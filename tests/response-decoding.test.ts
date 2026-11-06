@@ -68,7 +68,12 @@ describe('escaped response values', () => {
 
   it('leaves an unrecognized escape as the literal character', () => {
     expect(unescapeResponseValue('"a\\qb"')).toBe('aqb');
-    expect(unescapeResponseValue('"a\\xZZ"')).toBe('axZZ');
+  });
+
+  it('rejects a truncated or non-hex \\x escape and an unterminated quote', () => {
+    expect(() => unescapeResponseValue('"a\\xZZ"')).toThrow(ProtocolError);
+    expect(() => unescapeResponseValue('"a\\x4"')).toThrow(ProtocolError);
+    expect(() => unescapeResponseValue('"abc')).toThrow(ProtocolError);
   });
 });
 

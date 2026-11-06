@@ -56,13 +56,34 @@ export function ensureSafeCommandValue(value: string, fieldName: string): string
 }
 
 /**
+ * Unicode `White_Space` code points outside ASCII that the server's tokenizer
+ * splits on outside quotes: U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028,
+ * U+2029, U+202F, U+205F, U+3000. U+200B is not whitespace. Mirrors
+ * `wire_quoting.h::IsUnicodeWhitespace`.
+ */
+const NON_ASCII_WHITESPACE = /[\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/;
+
+/**
+ * Check whether a single character is whitespace to the server tokenizer:
+ * ASCII whitespace (0x09-0x0D, 0x20) or one of the non-ASCII `White_Space`
+ * code points.
+ *
+ * @param {string} char - One UTF-16 code unit
+ * @returns {boolean} True when the server would split a bare token on it
+ */
+export function isWireWhitespace(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (code >= 0x09 && code <= 0x0d) || code === 0x20 || NON_ASCII_WHITESPACE.test(char);
+}
+
+/**
  * Ensure a value is usable as a single, unquoted identifier in the protocol.
  *
  * Identifiers (table names, primary keys, sort columns, filter keys,
  * dump filepaths) are sent unquoted on the wire, so any embedded whitespace
- * would split a single identifier into multiple tokens and break the
- * command. This validator additionally rejects empty strings and the
- * full set of control characters covered by {@link ensureSafeCommandValue}.
+ * -- ASCII or Unicode -- would split a single identifier into multiple tokens
+ * and break the command. This validator additionally rejects empty strings and
+ * the full set of control characters covered by {@link ensureSafeCommandValue}.
  *
  * @param {string} value - Identifier value to validate
  * @param {string} fieldName - Field name for clearer error messages
@@ -80,7 +101,7 @@ export function ensureSafeIdentifier(value: string, fieldName: string): string {
       const description = getControlCharDescription(char);
       throw new InputValidationError(`Input for ${fieldName} contains ${description}, which is not allowed`);
     }
-    if (char === ' ' || char === '\t') {
+    if (isWireWhitespace(char)) {
       throw new InputValidationError(`Input for ${fieldName} must not contain whitespace`);
     }
   }
@@ -149,11 +170,15 @@ const QUERY_RESERVED_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Non-ASCII whitespace code points the server's tokenizer splits on outside
- * quotes, beyond ASCII space/tab/CR/LF: U+00A0, U+1680, U+2000-U+200B,
- * U+2028, U+2029, U+202F, U+205F, U+3000. Mirrors `wire_quoting.h::IsUnicodeWhitespace`.
+ * Check whether `value` equals a reserved clause keyword, ignoring ASCII case
+ * only (the server never folds non-ASCII letters).
  */
-const UNICODE_WHITESPACE = /[\u00A0\u1680\u2000-\u200B\u2028\u2029\u202F\u205F\u3000]/;
+function isReservedKeyword(value: string): boolean {
+  if (value.length > 9) {
+    return false;
+  }
+  return QUERY_RESERVED_WORDS.has(value.replace(/[a-z]/g, (letter) => letter.toUpperCase()));
+}
 
 /**
  * Check whether `value` must be quoted to survive the wire tokenizer intact:
@@ -169,25 +194,21 @@ export function needsWireQuoting(value: string): boolean {
   if (value === '') {
     return true;
   }
-  if (QUERY_RESERVED_WORDS.has(value.toUpperCase())) {
+  if (isReservedKeyword(value)) {
     return true;
   }
   for (let i = 0; i < value.length; i += 1) {
     const char = value[i];
     const code = char.charCodeAt(0);
     if (
-      char === ' ' ||
-      char === '\t' ||
-      char === '\n' ||
-      char === '\r' ||
+      isWireWhitespace(char) ||
       char === '"' ||
       char === "'" ||
       char === '\\' ||
       char === '(' ||
       char === ')' ||
       code <= 0x1f ||
-      code === 0x7f ||
-      UNICODE_WHITESPACE.test(char)
+      code === 0x7f
     ) {
       return true;
     }
@@ -510,7 +531,7 @@ export function validateHighlight(highlight: HighlightOptions | undefined): void
 
 /**
  * Validate a FACET column name. Same rules as table names: must be non-empty
- * and contain no control or whitespace characters.
+ * and contain no control or (ASCII or Unicode) whitespace characters.
  *
  * @param {string} column - Column name
  * @throws {InputValidationError} When the column name is invalid
@@ -522,7 +543,7 @@ export function validateFacetColumn(column: string): void {
   for (let i = 0; i < column.length; i += 1) {
     const ch = column[i];
     const code = ch.charCodeAt(0);
-    if ((code >= 0x00 && code <= 0x1f) || code === 0x7f || ch === ' ' || ch === '\t') {
+    if ((code >= 0x00 && code <= 0x1f) || code === 0x7f || isWireWhitespace(ch)) {
       throw new InputValidationError(`facet column contains invalid character: ${JSON.stringify(ch)}`);
     }
   }

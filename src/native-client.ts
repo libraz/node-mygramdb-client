@@ -22,6 +22,7 @@ import {
 import { DEFAULT_MAX_QUERY_LENGTH, ensureSafeIdentifier, quoteCommandArgument } from './command-utils.js';
 import { applyClientDefaults } from './config-utils.js';
 import { ConnectionError, ProtocolError, ServerError } from './errors.js';
+import { longOperationTimeout } from './response-frame.js';
 import {
   parseCacheStatsResponse,
   parseCountResponse,
@@ -65,7 +66,7 @@ interface NativeBinding {
   destroyClient(client: unknown): void;
   isConnected(client: unknown): boolean;
   search(client: unknown, table: string, query: string, limit: number, offset: number): string;
-  sendCommand(client: unknown, command: string): string;
+  sendCommand(client: unknown, command: string, timeoutMs?: number): string;
   getLastError(client: unknown): string;
   simplifySearchExpression(expression: string): SimplifiedExpression;
 }
@@ -86,10 +87,10 @@ const DEFAULT_CONFIG: Required<ClientConfig> = {
   timeout: DEFAULT_TIMEOUT,
   recvBufferSize: 65536,
   maxQueryLength: DEFAULT_MAX_QUERY_LENGTH,
-  // The addon owns the socket and applies one deadline to every command, so
-  // the connect, operation-specific and frame-size settings are accepted for
-  // configuration parity and have no effect on the native path. The same is
-  // true of auto-reconnect, which the addon does not implement.
+  // The addon owns the socket: the connect and frame-size settings are accepted
+  // for configuration parity and have no effect on the native path, and neither
+  // does auto-reconnect, which the addon does not implement. The operation
+  // deadlines are passed to the addon per command.
   connectTimeout: DEFAULT_TIMEOUT,
   dumpSaveTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
   dumpLoadTimeout: DEFAULT_LONG_OPERATION_TIMEOUT,
@@ -459,7 +460,7 @@ export class NativeMygramClient {
       filepath === undefined || filepath === ''
         ? 'DUMP SAVE'
         : `DUMP SAVE ${quoteCommandArgument(filepath, 'filepath')}`;
-    const response = await this.sendCommand(command);
+    const response = await this.dispatch(command, this.config.dumpSaveTimeout);
     if (response.startsWith('OK DUMP_STARTED ')) {
       return response.substring('OK DUMP_STARTED '.length);
     }
@@ -582,6 +583,17 @@ export class NativeMygramClient {
    * @throws {ConnectionError} If not connected
    */
   sendCommand(command: string): Promise<string> {
+    return this.dispatch(command, longOperationTimeout(command, this.config));
+  }
+
+  /**
+   * Send a command to the addon with an optional per-command deadline.
+   *
+   * @param {string} command - Command string
+   * @param {number} [timeout] - Deadline in milliseconds; omitted uses the addon default
+   * @returns {Promise<string>} Response from server
+   */
+  private dispatch(command: string, timeout?: number): Promise<string> {
     return new Promise((resolve, reject) => {
       if (!this.connected || !this.clientHandle) {
         reject(new ConnectionError('Not connected to server'));
@@ -589,7 +601,10 @@ export class NativeMygramClient {
       }
 
       try {
-        const rawResponse = this.native.sendCommand(this.clientHandle, command);
+        const rawResponse =
+          timeout === undefined
+            ? this.native.sendCommand(this.clientHandle, command)
+            : this.native.sendCommand(this.clientHandle, command, timeout);
         const response = rawResponse.replace(/\r\n/g, '\n').trim();
         const errorFrame = parseErrorFrame(response);
         if (errorFrame !== null) {

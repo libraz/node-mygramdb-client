@@ -37,6 +37,10 @@ export const ErrorCode = {
   ConfigSchemaError: 1005,
   ConfigYamlError: 1006,
   ConfigJsonError: 1007,
+  /** `SET` named a configuration variable the server does not have. */
+  ConfigUnknownVariable: 1008,
+  /** `SET` named a variable that exists but cannot be changed at runtime. */
+  ConfigVariableNotMutable: 1009,
 
   // MySQL / replication (2000-2999)
   MySQLConnectionFailed: 2000,

@@ -131,10 +131,13 @@ describe('command utils', () => {
       expect(needsWireQuoting('a b')).toBe(true);
     });
 
-    it('quotes a term containing a zero-width space (U+200B)', () => {
-      // U+200B is outside Unicode's own whitespace category but is one of the
-      // separators the server's tokenizer splits query text on.
-      expect(needsWireQuoting('a​b')).toBe(true);
+    it('does not quote a term containing a zero-width space (U+200B)', () => {
+      // U+200B is not Unicode White_Space, so the server's tokenizer does not split on it.
+      expect(needsWireQuoting('a​b')).toBe(false);
+    });
+
+    it('quotes a term containing a next-line character (U+0085)', () => {
+      expect(needsWireQuoting('a\u0085b')).toBe(true);
     });
 
     it('does not quote a codepoint just past the Unicode whitespace range (U+200C)', () => {
